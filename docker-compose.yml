@@ -57,6 +57,33 @@ services:
     networks:
       - algo-net
 
+  feature-engine:
+    build:
+      context: .
+      dockerfile: services/feature-engine/Dockerfile
+    container_name: algo-feature-engine
+    restart: unless-stopped
+    depends_on:
+      questdb:
+        condition: service_started
+      redis:
+        condition: service_healthy
+      data-collector:
+        condition: service_started
+    volumes:
+      - ./config:/app/config:ro
+    environment:
+      - PYTHONUNBUFFERED=1
+      - TZ=UTC
+      - OMP_NUM_THREADS=8
+    networks:
+      - algo-net
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+          cpus: '8'
+
   prometheus:
     image: prom/prometheus:latest
     container_name: algo-prometheus

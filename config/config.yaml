@@ -36,6 +36,35 @@ data_collection:
   buffer_size: 10000
   flush_interval: 5
 
+feature_engine:
+  buffer_size: 5000
+  flush_interval: 10
+  lookback_periods: 500
+  calculation_threads: 8
+  feature_version: 1
+  quality_check_interval: 300
+  indicators:
+    technical:
+      sma_periods: [10, 20, 50, 100, 200]
+      ema_periods: [10, 20, 50, 100, 200]
+      rsi_periods: [14, 21]
+      atr_periods: [14, 21]
+      bb_length: 20
+      bb_std: 2
+      macd_fast: 12
+      macd_slow: 26
+      macd_signal: 9
+    custom:
+      lookback_periods: [1, 5, 10, 20]
+      volatility_windows: [20, 50]
+    microstructure:
+      lookback_windows: [5, 10, 20, 50]
+  quality_thresholds:
+    missing_percentage: 5.0
+    outlier_percentage: 1.0
+    correlation_threshold: 0.95
+    zero_variance_threshold: 0.00001
+
 logging:
   level: INFO
   format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"

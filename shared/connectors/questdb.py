@@ -299,3 +299,41 @@ class QuestDBConnector:
 
     def wait_for_commit(self, timeout: int = 5):
         time.sleep(timeout)
+
+    def get_features_df(self, symbol: str, interval: str,
+                        start_time: Optional[int] = None,
+                        end_time: Optional[int] = None,
+                        limit: int = 1000) -> pd.DataFrame:
+        table_name = f"features_{interval}"
+
+        where_conditions = [f"symbol = '{symbol}'"]
+
+        if start_time:
+            where_conditions.append(f"timestamp >= {start_time}000000")
+        if end_time:
+            where_conditions.append(f"timestamp <= {end_time}000000")
+
+        where_clause = " AND ".join(where_conditions)
+
+        query = f"""
+               SELECT * FROM {table_name}
+               WHERE {where_clause}
+               ORDER BY timestamp DESC
+               LIMIT {limit}
+           """
+
+        try:
+            result = self.execute_query(query)
+
+            if not result:
+                return pd.DataFrame()
+
+            df = pd.DataFrame(result)
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ns')
+            df.set_index('timestamp', inplace=True)
+            df.sort_index(inplace=True)
+
+            return df
+        except Exception as e:
+            self.logger.error(f"Failed to get features dataframe: {e}")
+            return pd.DataFrame()
