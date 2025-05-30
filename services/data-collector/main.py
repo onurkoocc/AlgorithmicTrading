@@ -6,6 +6,7 @@ import time
 from typing import Dict, Any, List
 import threading
 from queue import Empty
+from collections import defaultdict
 
 from shared.utils.config import Config
 from shared.utils.logging import setup_logger
@@ -29,9 +30,10 @@ class DataCollectorService:
 
         self.collector = BinanceFuturesCollector(self.symbols, self.intervals)
 
-        self.buffer = []
+        self.buffer = defaultdict(lambda: defaultdict(dict))
         self.buffer_size = self.config.get('data_collection.buffer_size', 10000)
         self.flush_interval = self.config.get('data_collection.flush_interval', 5)
+        self.total_buffer_items = 0
 
         self.is_running = False
         self.tasks = []
@@ -87,7 +89,8 @@ class DataCollectorService:
 
                     if latest_timestamp:
                         latest_dt = datetime.fromtimestamp(latest_timestamp / 1000)
-                        start_time = int((latest_dt + timedelta(seconds=1)).timestamp() * 1000)
+                        interval_ms = self._get_interval_ms(interval)
+                        start_time = int((latest_dt.timestamp() * 1000) + interval_ms)
                     else:
                         start_time = int((datetime.now() - timedelta(days=30)).timestamp() * 1000)
 
@@ -116,6 +119,23 @@ class DataCollectorService:
                 except Exception as e:
                     self.logger.error(f"Error downloading historical data for {symbol} {interval}: {e}")
 
+    def _get_interval_ms(self, interval: str) -> int:
+        interval_map = {
+            '1m': 60000,
+            '3m': 180000,
+            '5m': 300000,
+            '15m': 900000,
+            '30m': 1800000,
+            '1h': 3600000,
+            '2h': 7200000,
+            '4h': 14400000,
+            '6h': 21600000,
+            '8h': 28800000,
+            '12h': 43200000,
+            '1d': 86400000
+        }
+        return interval_map.get(interval, 60000)
+
     async def process_data(self):
         while self.is_running:
             try:
@@ -124,17 +144,23 @@ class DataCollectorService:
                 if data and data['type'] == 'kline':
                     kline = data['data']
 
-                    self.buffer.append(kline)
+                    self.buffer[kline.symbol][kline.interval][int(kline.timestamp)] = kline
+
+                    self.total_buffer_items = sum(
+                        len(timestamps)
+                        for symbol_intervals in self.buffer.values()
+                        for timestamps in symbol_intervals.values()
+                    )
 
                     try:
                         self.redis.publish(f"kline:{kline.symbol}:{kline.interval}", kline.to_dict())
                     except Exception as e:
                         self.logger.warning(f"Failed to publish to Redis: {e}")
 
-                    self.metrics.set_queue_size('buffer', len(self.buffer))
+                    self.metrics.set_queue_size('buffer', self.total_buffer_items)
                     self.metrics.update_timestamp(kline.symbol, kline.interval)
 
-                    if len(self.buffer) >= self.buffer_size:
+                    if self.total_buffer_items >= self.buffer_size:
                         await self.flush_buffer()
 
             except Empty:
@@ -148,23 +174,24 @@ class DataCollectorService:
         if not self.buffer:
             return
 
-        self.logger.debug(f"Flushing {len(self.buffer)} klines to database")
+        self.logger.debug(f"Flushing {self.total_buffer_items} klines to database")
 
-        klines_by_key = {}
+        for symbol, intervals in self.buffer.items():
+            for interval, klines_dict in intervals.items():
+                if not klines_dict:
+                    continue
 
-        for kline in self.buffer:
-            key = (kline.symbol, kline.interval)
-            if key not in klines_by_key:
-                klines_by_key[key] = []
-            klines_by_key[key].append(kline.to_dict())
+                try:
+                    sorted_klines = sorted(klines_dict.values(), key=lambda k: k.timestamp)
+                    klines_data = [kline.to_dict() for kline in sorted_klines]
 
-        for (symbol, interval), klines in klines_by_key.items():
-            try:
-                self.questdb.batch_write_klines(symbol, interval, klines)
-            except Exception as e:
-                self.logger.error(f"Failed to write klines for {symbol} {interval}: {e}")
+                    self.questdb.batch_write_klines(symbol, interval, klines_data)
+
+                except Exception as e:
+                    self.logger.error(f"Failed to write klines for {symbol} {interval}: {e}")
 
         self.buffer.clear()
+        self.total_buffer_items = 0
         self.metrics.set_queue_size('buffer', 0)
 
     async def periodic_flush(self):
@@ -203,7 +230,7 @@ class DataCollectorService:
                         'status': 'healthy' if redis_healthy else 'degraded',
                         'timestamp': time.time(),
                         'active_streams': active_streams,
-                        'buffer_size': len(self.buffer)
+                        'buffer_size': self.total_buffer_items
                     }, expire=60)
 
             except Exception as e:

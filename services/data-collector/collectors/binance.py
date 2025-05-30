@@ -27,6 +27,7 @@ class BinanceFuturesCollector(BaseCollector):
         self.reconnect_delay = 5
         self.max_reconnect_delay = 60
         self.ping_interval = 20
+        self.last_kline_times = {}
 
     async def connect(self):
         self.is_running = True
@@ -135,9 +136,23 @@ class BinanceFuturesCollector(BaseCollector):
         if not subscription:
             return
 
+        symbol = subscription['symbol']
+        interval = subscription['interval']
+
+        kline_key = f"{symbol}:{interval}"
+        kline_timestamp = kline_data['t']
+
+        if not kline_data['x']:
+            return
+
+        if kline_key in self.last_kline_times and self.last_kline_times[kline_key] >= kline_timestamp:
+            return
+
+        self.last_kline_times[kline_key] = kline_timestamp
+
         kline = Kline.from_binance_ws(
-            subscription['symbol'],
-            subscription['interval'],
+            symbol,
+            interval,
             [
                 kline_data['t'],
                 kline_data['o'],
@@ -159,7 +174,7 @@ class BinanceFuturesCollector(BaseCollector):
             'data': kline
         })
 
-        self.metrics.record_ws_message(subscription['symbol'], 'kline')
+        self.metrics.record_ws_message(symbol, 'kline')
 
     async def fetch_historical_klines(self, symbol: str, interval: str,
                                       start_time: int, end_time: Optional[int] = None,
@@ -207,7 +222,7 @@ class BinanceFuturesCollector(BaseCollector):
                         if last_timestamp >= end_time or len(data) < limit:
                             break
 
-                        current_start = last_timestamp + 1
+                        current_start = last_timestamp + self._get_interval_ms(interval)
 
                         await asyncio.sleep(0.1)
 
@@ -219,6 +234,26 @@ class BinanceFuturesCollector(BaseCollector):
                     await asyncio.sleep(5)
 
         return klines
+
+    def _get_interval_ms(self, interval: str) -> int:
+        interval_map = {
+            '1m': 60000,
+            '3m': 180000,
+            '5m': 300000,
+            '15m': 900000,
+            '30m': 1800000,
+            '1h': 3600000,
+            '2h': 7200000,
+            '4h': 14400000,
+            '6h': 21600000,
+            '8h': 28800000,
+            '12h': 43200000,
+            '1d': 86400000,
+            '3d': 259200000,
+            '1w': 604800000,
+            '1M': 2592000000
+        }
+        return interval_map.get(interval, 60000)
 
     async def start(self):
         await self.connect()

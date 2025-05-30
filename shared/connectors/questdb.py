@@ -91,6 +91,7 @@ class QuestDBConnector:
         table_name = f"klines_{interval}"
         batch_size = 100
         total_written = 0
+        unique_timestamps = set()
 
         for i in range(0, len(data_list), batch_size):
             batch = data_list[i:i + batch_size]
@@ -98,6 +99,11 @@ class QuestDBConnector:
             try:
                 for data in batch:
                     timestamp_ns = int(data['timestamp'] * 1_000_000_000)
+
+                    if timestamp_ns in unique_timestamps:
+                        continue
+
+                    unique_timestamps.add(timestamp_ns)
 
                     line = (
                         f"{table_name},"
@@ -184,9 +190,17 @@ class QuestDBConnector:
         for interval in intervals:
             table_name = f"klines_{interval}"
 
+            drop_query = f"DROP TABLE IF EXISTS {table_name}"
+
+            try:
+                self.execute_query(drop_query)
+                self.logger.info(f"Dropped existing table {table_name}")
+            except:
+                pass
+
             create_query = f"""
-                CREATE TABLE IF NOT EXISTS {table_name} (
-                    symbol SYMBOL capacity 256 CACHE,
+                CREATE TABLE {table_name} (
+                    symbol SYMBOL capacity 256 CACHE INDEX,
                     open DOUBLE,
                     high DOUBLE,
                     low DOUBLE,
@@ -197,16 +211,15 @@ class QuestDBConnector:
                     taker_buy_volume DOUBLE,
                     taker_buy_quote_volume DOUBLE,
                     timestamp TIMESTAMP
-                ) timestamp(timestamp) PARTITION BY DAY WAL DEDUP UPSERT KEYS(timestamp, symbol);
+                ) timestamp(timestamp) PARTITION BY DAY WAL DEDUP UPSERT KEYS(symbol, timestamp);
             """
 
             try:
                 self.execute_query(create_query)
                 self.logger.info(f"Created table {table_name}")
             except Exception as e:
-                if "already exists" not in str(e).lower():
-                    self.logger.error(f"Failed to create table {table_name}: {e}")
-                    raise
+                self.logger.error(f"Failed to create table {table_name}: {e}")
+                raise
 
     def get_klines_df(self, symbol: str, interval: str,
                       start_time: Optional[int] = None,
@@ -262,6 +275,24 @@ class QuestDBConnector:
             result = self.execute_query(query)
             if result:
                 return result[0]['cnt']
+        except:
+            pass
+        return 0
+
+    def check_duplicates(self, symbol: str, interval: str) -> int:
+        table_name = f"klines_{interval}"
+        query = f"""
+            SELECT timestamp, count(*) as cnt 
+            FROM {table_name} 
+            WHERE symbol = '{symbol}' 
+            GROUP BY timestamp 
+            HAVING count(*) > 1
+        """
+
+        try:
+            result = self.execute_query(query)
+            if result:
+                return len(result)
         except:
             pass
         return 0
