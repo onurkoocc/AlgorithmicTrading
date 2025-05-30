@@ -35,6 +35,7 @@ data_collection:
     - 1d
   buffer_size: 10000
   flush_interval: 5
+  historical_days: 365
 
 feature_engine:
   buffer_size: 5000

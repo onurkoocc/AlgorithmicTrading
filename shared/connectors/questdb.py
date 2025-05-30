@@ -269,6 +269,9 @@ class QuestDBConnector:
 
     def verify_data(self, symbol: str, interval: str) -> int:
         table_name = f"klines_{interval}"
+        return self.verify_table_data(table_name, symbol)
+
+    def verify_table_data(self, table_name: str, symbol: str) -> int:
         query = f"SELECT count() as cnt FROM {table_name} WHERE symbol = '{symbol}'"
 
         try:

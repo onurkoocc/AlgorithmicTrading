@@ -75,10 +75,12 @@ class TechnicalIndicatorCalculator:
             length=self.indicators_config['williams_r']['length']
         )
 
-        features[f'mfi_{self.indicators_config["mfi"]["length"]}'] = ta.mfi(
+        mfi_result = ta.mfi(
             df['high'], df['low'], df['close'], df['volume'],
             length=self.indicators_config['mfi']['length']
         )
+        if mfi_result is not None:
+            features[f'mfi_{self.indicators_config["mfi"]["length"]}'] = mfi_result.astype(float)
 
         return features
 
@@ -96,9 +98,13 @@ class TechnicalIndicatorCalculator:
             features['bb_upper'] = bb_result[
                 f'BBU_{self.indicators_config["bb"]["length"]}_{self.indicators_config["bb"]["std"]}.0']
 
-            features['bb_width'] = features['bb_upper'] - features['bb_lower']
-            features['bb_percent'] = (df['close'] - features['bb_lower']) / (
-                        features['bb_upper'] - features['bb_lower'])
+            bb_range = features['bb_upper'] - features['bb_lower']
+            features['bb_width'] = bb_range
+            features['bb_percent'] = np.where(
+                bb_range != 0,
+                (df['close'] - features['bb_lower']) / bb_range,
+                0.5
+            )
 
         for period in self.indicators_config['atr']:
             features[f'atr_{period}'] = ta.atr(df['high'], df['low'], df['close'], length=period)
@@ -111,7 +117,11 @@ class TechnicalIndicatorCalculator:
         features['vwap'] = ta.vwap(df['high'], df['low'], df['close'], df['volume'])
 
         features['volume_sma_20'] = ta.sma(df['volume'], length=20)
-        features['volume_ratio'] = df['volume'] / features['volume_sma_20']
+        features['volume_ratio'] = np.where(
+            features['volume_sma_20'] > 0,
+            df['volume'] / features['volume_sma_20'],
+            1.0
+        )
 
         return features
 
@@ -139,7 +149,7 @@ class TechnicalIndicatorCalculator:
 
         pivot = (high + low + close) / 3
 
-        return {
+        pivot_points = {
             'pivot': pivot,
             'resistance_1': 2 * pivot - low,
             'resistance_2': pivot + (high - low),
@@ -148,3 +158,8 @@ class TechnicalIndicatorCalculator:
             'support_2': pivot - (high - low),
             'support_3': low - 2 * (high - pivot)
         }
+
+        for key, value in pivot_points.items():
+            pivot_points[key] = value.ffill().fillna(0)
+
+        return pivot_points

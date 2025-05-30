@@ -82,6 +82,8 @@ class DataCollectorService:
     async def _download_missing_historical_data(self):
         self.logger.info("Checking for missing historical data")
 
+        historical_days = self.config.get('data_collection.historical_days', 365)
+
         for symbol in self.symbols:
             for interval in self.intervals:
                 try:
@@ -92,7 +94,7 @@ class DataCollectorService:
                         interval_ms = self._get_interval_ms(interval)
                         start_time = int((latest_dt.timestamp() * 1000) + interval_ms)
                     else:
-                        start_time = int((datetime.now() - timedelta(days=30)).timestamp() * 1000)
+                        start_time = int((datetime.now() - timedelta(days=historical_days)).timestamp() * 1000)
 
                     end_time = int(time.time() * 1000)
 

@@ -224,20 +224,42 @@ class FeatureEngineService:
         features_df['feature_version'] = 1
 
         features_df = features_df.replace([np.inf, -np.inf], np.nan)
-        features_df = features_df.ffill().bfill()
+
+        numeric_columns = features_df.select_dtypes(include=[np.number]).columns
+        features_df[numeric_columns] = features_df[numeric_columns].ffill().bfill()
 
         return features_df
 
     def _store_features(self, symbol: str, interval: str, features_df: pd.DataFrame):
         table_name = f"features_{interval}"
-        records = features_df.reset_index().to_dict('records')
+
+        if features_df.index.name != 'timestamp':
+            features_df = features_df.reset_index(names=['timestamp'])
+        else:
+            features_df = features_df.reset_index()
+
+        records = features_df.to_dict('records')
 
         batch_size = 100
         for i in range(0, len(records), batch_size):
             batch = records[i:i + batch_size]
 
             for record in batch:
-                timestamp_ns = int(record['timestamp'].timestamp() * 1_000_000_000)
+                if 'timestamp' not in record:
+                    self.logger.error(f"Missing timestamp in record for {symbol} {interval}")
+                    continue
+
+                timestamp_val = record['timestamp']
+                if pd.isna(timestamp_val):
+                    self.logger.warning(f"NaN timestamp for {symbol} {interval}, skipping record")
+                    continue
+
+                if isinstance(timestamp_val, pd.Timestamp):
+                    timestamp_ns = int(timestamp_val.timestamp() * 1_000_000_000)
+                elif isinstance(timestamp_val, (int, float)):
+                    timestamp_ns = int(timestamp_val * 1_000_000_000)
+                else:
+                    timestamp_ns = int(pd.Timestamp(timestamp_val).timestamp() * 1_000_000_000)
 
                 numeric_fields = []
                 for key, value in record.items():
@@ -252,8 +274,6 @@ class FeatureEngineService:
                     elif isinstance(value, (int, float)):
                         if key in ['market_regime', 'feature_version']:
                             numeric_fields.append(f"{key}={int(value)}i")
-                        elif key == 'mfi_14':
-                            numeric_fields.append(f"{key}={float(value)}")
                         else:
                             numeric_fields.append(f"{key}={float(value)}")
 
@@ -311,10 +331,10 @@ class FeatureEngineService:
                     'low': kline_data['low'],
                     'close': kline_data['close'],
                     'volume': kline_data['volume'],
-                    'quote_volume': kline_data['quote_volume'],
-                    'trades': kline_data['trades'],
-                    'taker_buy_volume': kline_data['taker_buy_volume'],
-                    'taker_buy_quote_volume': kline_data['taker_buy_quote_volume']
+                    'quote_volume': kline_data.get('quote_volume', 0),
+                    'trades': kline_data.get('trades', 0),
+                    'taker_buy_volume': kline_data.get('taker_buy_volume', 0),
+                    'taker_buy_quote_volume': kline_data.get('taker_buy_quote_volume', 0)
                 }], index=[new_timestamp])
 
                 df = pd.concat([df, new_row])
@@ -335,7 +355,12 @@ class FeatureEngineService:
                     if buffer_size >= self.buffer_size:
                         await self.flush_buffer()
 
-                    self.redis.publish(f"features:{symbol}:{interval}", latest_features.to_dict('records')[0])
+                    latest_dict = latest_features.reset_index().to_dict('records')[0]
+                    if 'timestamp' in latest_dict:
+                        if isinstance(latest_dict['timestamp'], pd.Timestamp):
+                            latest_dict['timestamp'] = latest_dict['timestamp'].isoformat()
+
+                    self.redis.publish(f"features:{symbol}:{interval}", latest_dict)
 
             self.metrics.record_ws_message(symbol, 'feature_update')
 
@@ -381,7 +406,8 @@ class FeatureEngineService:
                                 expire=3600
                             )
 
-                            if 'missing_analysis' in quality_metrics and 'missing_percentage' in quality_metrics['missing_analysis']:
+                            if 'missing_analysis' in quality_metrics and 'missing_percentage' in quality_metrics[
+                                'missing_analysis']:
                                 if quality_metrics['missing_analysis']['missing_percentage'] > 10:
                                     self.logger.warning(
                                         f"High missing data for {symbol} {interval}: "

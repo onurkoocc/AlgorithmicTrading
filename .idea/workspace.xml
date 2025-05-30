@@ -4,8 +4,14 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="81427cb1-1f01-45c2-9d19-eedb5dbc97cb" name="Changes" comment="Phase 2 feature calculation completed">
+    <list default="true" id="81427cb1-1f01-45c2-9d19-eedb5dbc97cb" name="Changes" comment="minor fix">
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/config/config.yaml" beforeDir="false" afterPath="$PROJECT_DIR$/config/config.yaml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/services/data-collector/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/services/data-collector/main.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/services/feature-engine/indicators/custom.py" beforeDir="false" afterPath="$PROJECT_DIR$/services/feature-engine/indicators/custom.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/services/feature-engine/indicators/technical.py" beforeDir="false" afterPath="$PROJECT_DIR$/services/feature-engine/indicators/technical.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/services/feature-engine/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/services/feature-engine/main.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/shared/connectors/questdb.py" beforeDir="false" afterPath="$PROJECT_DIR$/shared/connectors/questdb.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -114,7 +120,15 @@
       <option name="project" value="LOCAL" />
       <updated>1748637048615</updated>
     </task>
-    <option name="localTasksCounter" value="5" />
+    <task id="LOCAL-00005" summary="minor fix">
+      <option name="closed" value="true" />
+      <created>1748637821826</created>
+      <option name="number" value="00005" />
+      <option name="presentableId" value="LOCAL-00005" />
+      <option name="project" value="LOCAL" />
+      <updated>1748637821826</updated>
+    </task>
+    <option name="localTasksCounter" value="6" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -136,6 +150,7 @@
     <MESSAGE value="Phase 1 Data Collecting is completed" />
     <MESSAGE value="fix data duplications" />
     <MESSAGE value="Phase 2 feature calculation completed" />
-    <option name="LAST_COMMIT_MESSAGE" value="Phase 2 feature calculation completed" />
+    <MESSAGE value="minor fix" />
+    <option name="LAST_COMMIT_MESSAGE" value="minor fix" />
   </component>
 </project>
