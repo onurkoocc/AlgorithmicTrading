@@ -80,7 +80,11 @@ class TechnicalIndicatorCalculator:
             length=self.indicators_config['mfi']['length']
         )
         if mfi_result is not None:
-            features[f'mfi_{self.indicators_config["mfi"]["length"]}'] = mfi_result.astype(float)
+            features[f'mfi_{self.indicators_config["mfi"]["length"]}'] = pd.Series(
+                mfi_result.values.flatten(),
+                index=mfi_result.index,
+                dtype=np.float64
+            )
 
         return features
 

@@ -93,9 +93,16 @@ class FeatureEngineService:
         for interval in self.intervals:
             table_name = f"features_{interval}"
 
+            drop_query = f"DROP TABLE IF EXISTS {table_name}"
+            try:
+                self.questdb.execute_query(drop_query)
+                self.logger.info(f"Dropped existing table {table_name}")
+            except:
+                pass
+
             create_query = f"""
-                CREATE TABLE IF NOT EXISTS {table_name} (
-                    symbol SYMBOL capacity 256 CACHE INDEX,
+                CREATE TABLE {table_name} (
+                    symbol SYMBOL capacity 256 CACHE,
                     open DOUBLE,
                     high DOUBLE,
                     low DOUBLE,
@@ -163,17 +170,43 @@ class FeatureEngineService:
                     momentum_score DOUBLE,
                     volume_momentum DOUBLE,
                     price_position DOUBLE,
-                    market_regime INT,
-                    feature_version INT,
+                    market_regime LONG,
+                    avg_spread DOUBLE,
+                    spread_volatility DOUBLE,
+                    relative_spread DOUBLE,
+                    spread_momentum DOUBLE,
+                    buy_pressure DOUBLE,
+                    sell_pressure DOUBLE,
+                    order_flow_imbalance DOUBLE,
+                    volume_weighted_buy_pressure DOUBLE,
+                    vwap_deviation_5 DOUBLE,
+                    vwap_deviation_10 DOUBLE,
+                    vwap_deviation_20 DOUBLE,
+                    vwap_deviation_50 DOUBLE,
+                    volume_concentration DOUBLE,
+                    avg_trade_size DOUBLE,
+                    trade_size_momentum DOUBLE,
+                    price_impact DOUBLE,
+                    kyle_lambda DOUBLE,
+                    amihud_illiquidity DOUBLE,
+                    volume_turnover DOUBLE,
+                    effective_spread DOUBLE,
+                    realized_volatility DOUBLE,
+                    depth_imbalance DOUBLE,
+                    feature_version LONG,
                     timestamp TIMESTAMP
-                ) timestamp(timestamp) PARTITION BY DAY WAL DEDUP UPSERT KEYS(symbol, timestamp);
+                ) timestamp(timestamp) PARTITION BY DAY WAL;
             """
 
             try:
                 self.questdb.execute_query(create_query)
                 self.logger.info(f"Created features table {table_name}")
+
+                time.sleep(2)
+
             except Exception as e:
                 self.logger.error(f"Failed to create features table {table_name}: {e}")
+                raise
 
     async def _calculate_historical_features(self):
         self.logger.info("Calculating features for historical data")
@@ -181,7 +214,8 @@ class FeatureEngineService:
         for symbol in self.symbols:
             for interval in self.intervals:
                 try:
-                    df = self.questdb.get_klines_df(symbol, interval, limit=10000)
+                    max_rows = 5000 if interval in ['1m', '3m', '5m'] else 10000
+                    df = self.questdb.get_klines_df(symbol, interval, limit=max_rows)
 
                     if df.empty:
                         continue
@@ -189,12 +223,25 @@ class FeatureEngineService:
                     if df.index.tz is not None:
                         df.index = df.index.tz_localize(None)
 
-                    features_df = self._calculate_all_features(df, symbol, interval)
+                    batch_size = 1000
+                    total_rows = len(df)
 
-                    if not features_df.empty:
-                        self._store_features(symbol, interval, features_df)
+                    for start_idx in range(0, total_rows, batch_size):
+                        end_idx = min(start_idx + batch_size, total_rows)
 
-                    await asyncio.sleep(1)
+                        lookback_start = max(0, start_idx - 200)
+                        batch_df = df.iloc[lookback_start:end_idx].copy()
+
+                        features_df = self._calculate_all_features(batch_df, symbol, interval)
+
+                        if not features_df.empty:
+                            features_to_store = features_df.iloc[-(end_idx - start_idx):].copy()
+                            self._store_features(symbol, interval, features_to_store)
+
+                        await asyncio.sleep(0.5)
+
+                    self.logger.info(f"Completed historical features for {symbol} {interval}")
+                    await asyncio.sleep(2)
 
                 except Exception as e:
                     self.logger.error(f"Error calculating historical features for {symbol} {interval}: {e}")
@@ -240,7 +287,7 @@ class FeatureEngineService:
 
         records = features_df.to_dict('records')
 
-        batch_size = 100
+        batch_size = 50
         for i in range(0, len(records), batch_size):
             batch = records[i:i + batch_size]
 
@@ -282,7 +329,7 @@ class FeatureEngineService:
                 self.questdb._send_line(line)
 
             if i + batch_size < len(records):
-                time.sleep(0.01)
+                time.sleep(0.05)
 
     async def process_realtime_updates(self):
         channels = []
@@ -395,24 +442,27 @@ class FeatureEngineService:
             try:
                 for symbol in self.symbols:
                     for interval in self.intervals:
-                        features_df = self.questdb.get_features_df(symbol, interval, limit=1000)
+                        try:
+                            features_df = self.questdb.get_features_df(symbol, interval, limit=500)
 
-                        if not features_df.empty:
-                            quality_metrics = self.quality_monitor.check_quality(features_df)
+                            if not features_df.empty:
+                                quality_metrics = self.quality_monitor.check_quality(features_df)
 
-                            self.redis.set_json(
-                                f"quality:{symbol}:{interval}",
-                                quality_metrics,
-                                expire=3600
-                            )
+                                self.redis.set_json(
+                                    f"quality:{symbol}:{interval}",
+                                    quality_metrics,
+                                    expire=3600
+                                )
 
-                            if 'missing_analysis' in quality_metrics and 'missing_percentage' in quality_metrics[
-                                'missing_analysis']:
-                                if quality_metrics['missing_analysis']['missing_percentage'] > 10:
-                                    self.logger.warning(
-                                        f"High missing data for {symbol} {interval}: "
-                                        f"{quality_metrics['missing_analysis']['missing_percentage']:.2f}%"
-                                    )
+                                if 'missing_analysis' in quality_metrics and 'missing_percentage' in quality_metrics[
+                                    'missing_analysis']:
+                                    if quality_metrics['missing_analysis']['missing_percentage'] > 10:
+                                        self.logger.warning(
+                                            f"High missing data for {symbol} {interval}: "
+                                            f"{quality_metrics['missing_analysis']['missing_percentage']:.2f}%"
+                                        )
+                        except Exception as e:
+                            self.logger.warning(f"Skipping quality check for {symbol} {interval}: {e}")
 
             except Exception as e:
                 self.logger.error(f"Quality monitoring error: {e}")

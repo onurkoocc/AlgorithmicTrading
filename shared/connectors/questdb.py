@@ -158,7 +158,12 @@ class QuestDBConnector:
 
                     return [dict(zip(columns, row)) for row in rows]
                 else:
-                    raise Exception(f"Query failed with status {response.status_code}: {response.text}")
+                    error_msg = f"Query failed with status {response.status_code}: {response.text}"
+                    if "could not mmap" in response.text:
+                        self.logger.warning(f"Memory mapping error, attempting to recover: {error_msg}")
+                        time.sleep(2)
+                        continue
+                    raise Exception(error_msg)
 
             except Exception as e:
                 if attempt < retry_count - 1:
@@ -325,18 +330,34 @@ class QuestDBConnector:
                LIMIT {limit}
            """
 
-        try:
-            result = self.execute_query(query)
+        max_retries = 5
+        for attempt in range(max_retries):
+            try:
+                result = self.execute_query(query)
 
-            if not result:
+                if not result:
+                    return pd.DataFrame()
+
+                df = pd.DataFrame(result)
+                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ns')
+                df.set_index('timestamp', inplace=True)
+                df.sort_index(inplace=True)
+
+                return df
+            except Exception as e:
+                if "could not mmap" in str(e) and attempt < max_retries - 1:
+                    self.logger.warning(f"Memory mapping error on attempt {attempt + 1}, retrying...")
+                    time.sleep(3)
+                    continue
+                self.logger.error(f"Failed to get features dataframe: {e}")
                 return pd.DataFrame()
 
-            df = pd.DataFrame(result)
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ns')
-            df.set_index('timestamp', inplace=True)
-            df.sort_index(inplace=True)
+        return pd.DataFrame()
 
-            return df
+    def optimize_table(self, table_name: str):
+        try:
+            optimize_query = f"ALTER TABLE {table_name} SET PARAM o3MaxLag = 300s"
+            self.execute_query(optimize_query)
+            self.logger.info(f"Optimized table {table_name}")
         except Exception as e:
-            self.logger.error(f"Failed to get features dataframe: {e}")
-            return pd.DataFrame()
+            self.logger.warning(f"Failed to optimize table {table_name}: {e}")

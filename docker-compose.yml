@@ -10,7 +10,11 @@ services:
       - questdb_data:/root/.questdb
     environment:
       - QDB_TELEMETRY_ENABLED=false
-      - JAVA_OPTS=-Xms2g -Xmx4g
+      - JAVA_OPTS=-Xms4g -Xmx8g -XX:+UseG1GC -XX:MaxGCPauseMillis=200
+      - QDB_CAIRO_O3_MAX_LAG=300000
+      - QDB_CAIRO_COMMIT_LAG=1000
+      - QDB_CAIRO_PAGE_FRAME_COUNT=256
+      - QDB_CAIRO_WRITER_MEMORY_LIMIT=10G
     networks:
       - algo-net
     healthcheck:
@@ -19,6 +23,11 @@ services:
       timeout: 10s
       retries: 5
       start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: 12G
+          cpus: '6'
 
   redis:
     image: redis:7-alpine
@@ -28,7 +37,7 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
-    command: redis-server --appendonly yes
+    command: redis-server --appendonly yes --maxmemory 2gb --maxmemory-policy allkeys-lru
     networks:
       - algo-net
     healthcheck:
@@ -37,6 +46,11 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '2'
 
   data-collector:
     build:
@@ -56,6 +70,11 @@ services:
       - TZ=UTC
     networks:
       - algo-net
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '2'
 
   feature-engine:
     build:
