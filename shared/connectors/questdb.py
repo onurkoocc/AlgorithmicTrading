@@ -23,20 +23,7 @@ class QuestDBConnector:
 
         self.http_base_url = f"http://{self.host}:{self.http_port}"
         self._socket = None
-        self._connect_with_retry()
-
-    def _connect_with_retry(self, max_retries: int = 5, retry_delay: float = 2.0):
-        for attempt in range(max_retries):
-            try:
-                self._connect()
-                return
-            except Exception as e:
-                if attempt < max_retries - 1:
-                    self.logger.warning(f"Connection attempt {attempt + 1} failed: {e}. Retrying in {retry_delay}s...")
-                    time.sleep(retry_delay)
-                else:
-                    self.logger.error(f"Failed to connect after {max_retries} attempts")
-                    raise
+        self._connect()
 
     def _connect(self):
         try:
@@ -48,6 +35,7 @@ class QuestDBConnector:
 
             self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self._socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            self._socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
             self._socket.settimeout(30.0)
             self._socket.connect((self.host, self.port))
             self.logger.info(f"Connected to QuestDB at {self.host}:{self.port}")
@@ -55,30 +43,28 @@ class QuestDBConnector:
             self.logger.error(f"Failed to connect to QuestDB: {e}")
             raise
 
-    def _reconnect(self):
-        self._connect_with_retry()
-
-    def _send_batch(self, data: str, retry_count: int = 3):
+    def _send_line(self, line: str, retry_count: int = 3):
         for attempt in range(retry_count):
             try:
-                self._socket.sendall(data.encode('utf-8'))
+                if not line.endswith('\n'):
+                    line += '\n'
+
+                self._socket.sendall(line.encode('utf-8'))
                 return True
+
             except (socket.error, BrokenPipeError, ConnectionResetError) as e:
                 if attempt < retry_count - 1:
                     self.logger.warning(f"Send failed (attempt {attempt + 1}/{retry_count}): {e}")
-                    time.sleep(0.5)
-                    self._reconnect()
+                    time.sleep(0.1)
+                    self._connect()
                 else:
                     self.logger.error(f"Failed to send data after {retry_count} attempts")
                     raise
         return False
 
-    def write_line(self, line: str):
-        self._send_batch(line + '\n')
-
     def write_kline(self, symbol: str, interval: str, data: Dict[str, Any]):
         table_name = f"klines_{interval}"
-        timestamp = int(data['timestamp'] * 1_000_000)
+        timestamp_ns = int(data['timestamp'] * 1_000_000_000)
 
         line = (
             f"{table_name},"
@@ -89,13 +75,13 @@ class QuestDBConnector:
             f"close={data['close']},"
             f"volume={data['volume']},"
             f"quote_volume={data.get('quote_volume', 0)},"
-            f"trades={data.get('trades', 0)},"
+            f"trades={data.get('trades', 0)}i,"
             f"taker_buy_volume={data.get('taker_buy_volume', 0)},"
             f"taker_buy_quote_volume={data.get('taker_buy_quote_volume', 0)} "
-            f"{timestamp}"
+            f"{timestamp_ns}"
         )
 
-        self.write_line(line)
+        self._send_line(line)
         self.metrics.record_db_write(table_name, 'success')
 
     def batch_write_klines(self, symbol: str, interval: str, data_list: List[Dict[str, Any]]):
@@ -103,58 +89,48 @@ class QuestDBConnector:
             return
 
         table_name = f"klines_{interval}"
-        batch_size = 500  # Reduced batch size
+        batch_size = 100
         total_written = 0
 
         for i in range(0, len(data_list), batch_size):
             batch = data_list[i:i + batch_size]
-            lines = []
-
-            for data in batch:
-                timestamp = int(data['timestamp'] * 1_000_000)
-
-                line = (
-                    f"{table_name},"
-                    f"symbol={symbol} "
-                    f"open={data['open']},"
-                    f"high={data['high']},"
-                    f"low={data['low']},"
-                    f"close={data['close']},"
-                    f"volume={data['volume']},"
-                    f"quote_volume={data.get('quote_volume', 0)},"
-                    f"trades={data.get('trades', 0)},"
-                    f"taker_buy_volume={data.get('taker_buy_volume', 0)},"
-                    f"taker_buy_quote_volume={data.get('taker_buy_quote_volume', 0)} "
-                    f"{timestamp}"
-                )
-                lines.append(line)
-
-            batch_data = '\n'.join(lines) + '\n'
 
             try:
-                success = self._send_batch(batch_data)
-                if success:
-                    total_written += len(batch)
-                    self.metrics.record_db_write(table_name, 'success')
-                    self.logger.debug(f"Written batch of {len(batch)} klines for {symbol} {interval}")
+                for data in batch:
+                    timestamp_ns = int(data['timestamp'] * 1_000_000_000)
 
-                # Small delay between batches
+                    line = (
+                        f"{table_name},"
+                        f"symbol={symbol} "
+                        f"open={data['open']},"
+                        f"high={data['high']},"
+                        f"low={data['low']},"
+                        f"close={data['close']},"
+                        f"volume={data['volume']},"
+                        f"quote_volume={data.get('quote_volume', 0)},"
+                        f"trades={data.get('trades', 0)}i,"
+                        f"taker_buy_volume={data.get('taker_buy_volume', 0)},"
+                        f"taker_buy_quote_volume={data.get('taker_buy_quote_volume', 0)} "
+                        f"{timestamp_ns}"
+                    )
+
+                    self._send_line(line)
+                    total_written += 1
+
                 if i + batch_size < len(data_list):
-                    time.sleep(0.2)
+                    time.sleep(0.01)
 
             except Exception as e:
                 self.logger.error(f"Failed to write batch for {symbol} {interval}: {e}")
                 self.metrics.record_db_write(table_name, 'error')
-                # Try to reconnect and continue with next batch
                 try:
-                    self._reconnect()
+                    self._connect()
                 except:
                     pass
 
-        # Force a new connection to ensure data is committed
         if total_written > 0:
-            self._reconnect()
             self.logger.info(f"Successfully written {total_written}/{len(data_list)} records for {symbol} {interval}")
+            self.metrics.record_db_write(table_name, 'success')
 
     def execute_query(self, query: str, retry_count: int = 3) -> List[Dict[str, Any]]:
         for attempt in range(retry_count):
@@ -197,7 +173,7 @@ class QuestDBConnector:
         try:
             result = self.execute_query(query)
             if result and result[0]['timestamp'] is not None:
-                return int(result[0]['timestamp'])
+                return int(result[0]['timestamp'] / 1000)
         except Exception as e:
             self.logger.warning(f"Failed to get latest timestamp for {symbol} {interval}: {e}")
         return None
@@ -221,7 +197,7 @@ class QuestDBConnector:
                     taker_buy_volume DOUBLE,
                     taker_buy_quote_volume DOUBLE,
                     timestamp TIMESTAMP
-                ) timestamp(timestamp) PARTITION BY DAY WAL;
+                ) timestamp(timestamp) PARTITION BY DAY WAL DEDUP UPSERT KEYS(timestamp, symbol);
             """
 
             try:
@@ -241,9 +217,9 @@ class QuestDBConnector:
         where_conditions = [f"symbol = '{symbol}'"]
 
         if start_time:
-            where_conditions.append(f"timestamp >= {start_time}")
+            where_conditions.append(f"timestamp >= {start_time}000000")
         if end_time:
-            where_conditions.append(f"timestamp <= {end_time}")
+            where_conditions.append(f"timestamp <= {end_time}000000")
 
         where_clause = " AND ".join(where_conditions)
 
@@ -261,7 +237,7 @@ class QuestDBConnector:
                 return pd.DataFrame()
 
             df = pd.DataFrame(result)
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='us')
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ns')
             df.set_index('timestamp', inplace=True)
             df.sort_index(inplace=True)
 
@@ -269,13 +245,6 @@ class QuestDBConnector:
         except Exception as e:
             self.logger.error(f"Failed to get klines dataframe: {e}")
             return pd.DataFrame()
-
-    def flush(self):
-        # Force reconnection to ensure data is committed
-        try:
-            self._reconnect()
-        except Exception as e:
-            self.logger.warning(f"Flush reconnect warning: {e}")
 
     def close(self):
         if self._socket:
@@ -286,7 +255,6 @@ class QuestDBConnector:
                 pass
 
     def verify_data(self, symbol: str, interval: str) -> int:
-        """Verify how many records were written for a symbol/interval"""
         table_name = f"klines_{interval}"
         query = f"SELECT count() as cnt FROM {table_name} WHERE symbol = '{symbol}'"
 
@@ -297,3 +265,6 @@ class QuestDBConnector:
         except:
             pass
         return 0
+
+    def wait_for_commit(self, timeout: int = 5):
+        time.sleep(timeout)

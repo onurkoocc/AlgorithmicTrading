@@ -73,6 +73,8 @@ class DataCollectorService:
 
         self.questdb.create_tables()
 
+        self.questdb.wait_for_commit(3)
+
         await self._download_missing_historical_data()
 
     async def _download_missing_historical_data(self):
@@ -84,7 +86,7 @@ class DataCollectorService:
                     latest_timestamp = self.questdb.get_latest_timestamp(symbol, interval)
 
                     if latest_timestamp:
-                        latest_dt = datetime.fromtimestamp(latest_timestamp / 1_000_000)
+                        latest_dt = datetime.fromtimestamp(latest_timestamp / 1000)
                         start_time = int((latest_dt + timedelta(seconds=1)).timestamp() * 1000)
                     else:
                         start_time = int((datetime.now() - timedelta(days=30)).timestamp() * 1000)
@@ -102,15 +104,10 @@ class DataCollectorService:
                             self.logger.info(f"Downloaded {len(klines)} klines for {symbol} {interval}")
 
                             batch_data = [kline.to_dict() for kline in klines]
+                            self.questdb.batch_write_klines(symbol, interval, batch_data)
 
-                            # Write in smaller chunks for better reliability
-                            max_batch_size = 2000
-                            for i in range(0, len(batch_data), max_batch_size):
-                                batch = batch_data[i:i + max_batch_size]
-                                self.questdb.batch_write_klines(symbol, interval, batch)
-                                await asyncio.sleep(1)
+                            self.questdb.wait_for_commit(5)
 
-                            # Verify data was written
                             count = self.questdb.verify_data(symbol, interval)
                             self.logger.info(f"Verified {count} total records in database for {symbol} {interval}")
 
@@ -190,9 +187,10 @@ class DataCollectorService:
                         f"Stream count mismatch: {active_streams}/{expected_streams}"
                     )
 
-                # Log data counts periodically
                 for symbol in self.symbols:
                     for interval in ['1m', '1h', '1d']:
+                        if interval not in self.intervals:
+                            continue
                         try:
                             count = self.questdb.verify_data(symbol, interval)
                             if count > 0:
