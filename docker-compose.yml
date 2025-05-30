@@ -10,14 +10,15 @@ services:
       - questdb_data:/root/.questdb
     environment:
       - QDB_TELEMETRY_ENABLED=false
-      - JAVA_OPTS=-Xms8g -Xmx8g
+      - JAVA_OPTS=-Xms2g -Xmx4g
     networks:
       - algo-net
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/status"]
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:9000/status || exit 1"]
       interval: 30s
       timeout: 10s
-      retries: 3
+      retries: 5
+      start_period: 40s
 
   redis:
     image: redis:7-alpine
@@ -32,9 +33,10 @@ services:
       - algo-net
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 30s
-      timeout: 10s
+      interval: 10s
+      timeout: 5s
       retries: 3
+      start_period: 10s
 
   data-collector:
     build:
@@ -44,7 +46,7 @@ services:
     restart: unless-stopped
     depends_on:
       questdb:
-        condition: service_healthy
+        condition: service_started
       redis:
         condition: service_healthy
     volumes:

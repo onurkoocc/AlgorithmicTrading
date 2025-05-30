@@ -4,62 +4,13 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="81427cb1-1f01-45c2-9d19-eedb5dbc97cb" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/.env.example" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.gitignore" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.gitkeep" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/AlgorithmicTrading.iml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/inspectionProfiles/Project_Default.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/inspectionProfiles/profiles_settings.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/modules.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/vcs.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Dockerfile" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/config/config.yaml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/docker-compose.yml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/monitoring/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/monitoring/grafana/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/monitoring/grafana/datasources/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/monitoring/grafana/datasources/prometheus.yml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/monitoring/prometheus.yml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/scripts/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/scripts/deploy.sh" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/scripts/download_historical.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/scripts/fix-docker-build.sh" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/scripts/setup.sh" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/services/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/services/backtester/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/services/backtester/analysis/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/services/backtester/engine/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/services/data-collector/Dockerfile" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/services/data-collector/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/services/data-collector/collectors/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/services/data-collector/collectors/base.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/services/data-collector/collectors/binance.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/services/data-collector/main.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/services/data-collector/requirements.txt" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/services/data-collector/storage/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/services/feature-engine/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/services/feature-engine/indicators/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/services/feature-engine/pipelines/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/services/ml-trainer/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/services/ml-trainer/models/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/services/ml-trainer/training/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/services/risk-manager/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/services/risk-manager/modules/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/services/strategy-engine/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/services/strategy-engine/strategies/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/shared/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/shared/config/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/shared/connectors/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/shared/connectors/questdb.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/shared/connectors/redis.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/shared/models/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/shared/models/market_data.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/shared/utils/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/shared/utils/config.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/shared/utils/logging.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/shared/utils/metrics.py" afterDir="false" />
+    <list default="true" id="81427cb1-1f01-45c2-9d19-eedb5dbc97cb" name="Changes" comment="first commit">
+      <change afterPath="$PROJECT_DIR$/scripts/diagnostics.sh" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docker-compose.yml" beforeDir="false" afterPath="$PROJECT_DIR$/docker-compose.yml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/scripts/setup.sh" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/setup.sh" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/services/data-collector/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/services/data-collector/main.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/shared/connectors/questdb.py" beforeDir="false" afterPath="$PROJECT_DIR$/shared/connectors/questdb.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -77,9 +28,21 @@
   <component name="Git.Settings">
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
   </component>
-  <component name="ProjectColorInfo"><![CDATA[{
-  "associatedIndex": 5
+  <component name="GitHubPullRequestSearchHistory"><![CDATA[{
+  "lastFilter": {
+    "state": "OPEN",
+    "assignee": "onurkoocc"
+  }
 }]]></component>
+  <component name="GithubPullRequestsUISettings"><![CDATA[{
+  "selectedUrlAndAccountId": {
+    "url": "https://github.com/onurkoocc/AlgorithmicTrading.git",
+    "accountId": "a2356c7c-597b-449e-9c56-23fde321a48d"
+  }
+}]]></component>
+  <component name="ProjectColorInfo">{
+  &quot;associatedIndex&quot;: 5
+}</component>
   <component name="ProjectId" id="2xmnRj5BwpnqCtpaIa73oKG5TdY" />
   <component name="ProjectLevelVcsManager" settingsEditedManually="true" />
   <component name="ProjectViewState">
@@ -89,6 +52,7 @@
   <component name="PropertiesComponent"><![CDATA[{
   "keyToString": {
     "RunOnceActivity.ShowReadmeOnStart": "true",
+    "RunOnceActivity.git.unshallow": "true",
     "git-widget-placeholder": "master",
     "node.js.detected.package.eslint": "true",
     "node.js.detected.package.tslint": "true",
@@ -120,7 +84,17 @@
       <option name="presentableId" value="Default" />
       <updated>1748552109687</updated>
       <workItem from="1748552110721" duration="4239000" />
+      <workItem from="1748588316344" duration="935000" />
     </task>
+    <task id="LOCAL-00001" summary="first commit">
+      <option name="closed" value="true" />
+      <created>1748588456387</created>
+      <option name="number" value="00001" />
+      <option name="presentableId" value="LOCAL-00001" />
+      <option name="project" value="LOCAL" />
+      <updated>1748588456387</updated>
+    </task>
+    <option name="localTasksCounter" value="2" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -136,5 +110,9 @@
         </entry>
       </map>
     </option>
+  </component>
+  <component name="VcsManagerConfiguration">
+    <MESSAGE value="first commit" />
+    <option name="LAST_COMMIT_MESSAGE" value="first commit" />
   </component>
 </project>

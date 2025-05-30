@@ -21,8 +21,8 @@ class DataCollectorService:
         self.logger = setup_logger(__name__)
         self.metrics = MetricsCollector()
 
-        self.questdb = QuestDBConnector()
-        self.redis = RedisConnector()
+        self.questdb = None
+        self.redis = None
 
         self.symbols = self.config.symbols
         self.intervals = self.config.intervals
@@ -36,8 +36,40 @@ class DataCollectorService:
         self.is_running = False
         self.tasks = []
 
+    def _init_connections(self, max_retries: int = 10, retry_delay: float = 3.0):
+        for attempt in range(max_retries):
+            try:
+                self.logger.info(f"Initializing connections (attempt {attempt + 1}/{max_retries})...")
+
+                if not self.questdb:
+                    self.questdb = QuestDBConnector()
+                    self.logger.info("QuestDB connected")
+
+                if not self.redis:
+                    self.redis = RedisConnector()
+                    if self.redis.ping():
+                        self.logger.info("Redis connected")
+                    else:
+                        raise Exception("Redis ping failed")
+
+                return True
+
+            except Exception as e:
+                self.logger.warning(f"Connection attempt {attempt + 1} failed: {e}")
+                if attempt < max_retries - 1:
+                    self.logger.info(f"Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                else:
+                    self.logger.error("Failed to initialize connections after all retries")
+                    return False
+
+        return False
+
     async def initialize(self):
         self.logger.info("Initializing data collector service")
+
+        if not self._init_connections():
+            raise Exception("Failed to initialize database connections")
 
         self.questdb.create_tables()
 
@@ -48,30 +80,34 @@ class DataCollectorService:
 
         for symbol in self.symbols:
             for interval in self.intervals:
-                latest_timestamp = self.questdb.get_latest_timestamp(symbol, interval)
+                try:
+                    latest_timestamp = self.questdb.get_latest_timestamp(symbol, interval)
 
-                if latest_timestamp:
-                    latest_dt = datetime.fromtimestamp(latest_timestamp / 1_000_000)
-                    start_time = int((latest_dt + timedelta(seconds=1)).timestamp() * 1000)
-                else:
-                    start_time = int((datetime.now() - timedelta(days=30)).timestamp() * 1000)
+                    if latest_timestamp:
+                        latest_dt = datetime.fromtimestamp(latest_timestamp / 1_000_000)
+                        start_time = int((latest_dt + timedelta(seconds=1)).timestamp() * 1000)
+                    else:
+                        start_time = int((datetime.now() - timedelta(days=30)).timestamp() * 1000)
 
-                end_time = int(time.time() * 1000)
+                    end_time = int(time.time() * 1000)
 
-                if end_time - start_time > 60000:
-                    self.logger.info(f"Downloading historical data for {symbol} {interval}")
+                    if end_time - start_time > 60000:
+                        self.logger.info(f"Downloading historical data for {symbol} {interval}")
 
-                    klines = await self.collector.fetch_historical_klines(
-                        symbol, interval, start_time, end_time
-                    )
+                        klines = await self.collector.fetch_historical_klines(
+                            symbol, interval, start_time, end_time
+                        )
 
-                    if klines:
-                        self.logger.info(f"Downloaded {len(klines)} klines for {symbol} {interval}")
+                        if klines:
+                            self.logger.info(f"Downloaded {len(klines)} klines for {symbol} {interval}")
 
-                        batch_data = [kline.to_dict() for kline in klines]
-                        self.questdb.batch_write_klines(symbol, interval, batch_data)
+                            batch_data = [kline.to_dict() for kline in klines]
+                            self.questdb.batch_write_klines(symbol, interval, batch_data)
 
-                        await asyncio.sleep(1)
+                            await asyncio.sleep(1)
+
+                except Exception as e:
+                    self.logger.error(f"Error downloading historical data for {symbol} {interval}: {e}")
 
     async def process_data(self):
         while self.is_running:
@@ -83,7 +119,10 @@ class DataCollectorService:
 
                     self.buffer.append(kline)
 
-                    self.redis.publish(f"kline:{kline.symbol}:{kline.interval}", kline.to_dict())
+                    try:
+                        self.redis.publish(f"kline:{kline.symbol}:{kline.interval}", kline.to_dict())
+                    except Exception as e:
+                        self.logger.warning(f"Failed to publish to Redis: {e}")
 
                     self.metrics.set_queue_size('buffer', len(self.buffer))
                     self.metrics.update_timestamp(kline.symbol, kline.interval)
@@ -129,7 +168,8 @@ class DataCollectorService:
     async def health_check(self):
         while self.is_running:
             try:
-                if not self.redis.ping():
+                redis_healthy = self.redis and self.redis.ping()
+                if not redis_healthy:
                     self.logger.error("Redis health check failed")
 
                 active_streams = len(self.collector.websockets)
@@ -140,12 +180,13 @@ class DataCollectorService:
                         f"Stream count mismatch: {active_streams}/{expected_streams}"
                     )
 
-                self.redis.set_json('health:data-collector', {
-                    'status': 'healthy',
-                    'timestamp': time.time(),
-                    'active_streams': active_streams,
-                    'buffer_size': len(self.buffer)
-                }, expire=60)
+                if self.redis:
+                    self.redis.set_json('health:data-collector', {
+                        'status': 'healthy' if redis_healthy else 'degraded',
+                        'timestamp': time.time(),
+                        'active_streams': active_streams,
+                        'buffer_size': len(self.buffer)
+                    }, expire=60)
 
             except Exception as e:
                 self.logger.error(f"Health check failed: {e}")
@@ -178,8 +219,10 @@ class DataCollectorService:
 
         await asyncio.gather(*self.tasks, return_exceptions=True)
 
-        self.questdb.close()
-        self.redis.close()
+        if self.questdb:
+            self.questdb.close()
+        if self.redis:
+            self.redis.close()
 
         self.logger.info("Data collector service stopped")
 

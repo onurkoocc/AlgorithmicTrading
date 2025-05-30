@@ -41,30 +41,77 @@ docker-compose build --no-cache data-collector
 
 # Start infrastructure services
 echo "Starting infrastructure services..."
-docker-compose up -d questdb redis prometheus grafana
+docker-compose up -d questdb redis
 
-# Wait for services to be ready
+# Wait for services to be ready with retry logic
 echo "Waiting for services to be ready..."
-sleep 15
+MAX_ATTEMPTS=30
+ATTEMPT=0
+
+while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
+    ATTEMPT=$((ATTEMPT + 1))
+    echo "Checking services (attempt $ATTEMPT/$MAX_ATTEMPTS)..."
+
+    # Check if QuestDB is responding
+    if curl -s http://localhost:9000/status > /dev/null 2>&1; then
+        echo "✓ QuestDB is ready"
+        break
+    else
+        echo "Waiting for QuestDB to start..."
+        sleep 2
+    fi
+done
+
+if [ $ATTEMPT -eq $MAX_ATTEMPTS ]; then
+    echo "⚠️  QuestDB did not start in time. Checking logs..."
+    docker-compose logs questdb
+    echo ""
+    echo "You may need to:"
+    echo "1. Check if ports 9000/9009 are already in use"
+    echo "2. Increase Docker memory allocation"
+    echo "3. Run 'docker-compose down -v' and try again"
+    exit 1
+fi
+
+# Additional wait for stability
+sleep 5
 
 # Test QuestDB connection and create tables
 echo "Initializing database..."
 docker-compose run --rm data-collector python -c "
 import sys
 sys.path.append('/app')
-from shared.connectors.questdb import QuestDBConnector
-try:
-    db = QuestDBConnector()
-    db.create_tables()
-    print('Database tables created successfully')
-    db.close()
-except Exception as e:
-    print(f'Failed to create tables: {e}')
-    sys.exit(1)
+max_retries = 5
+retry_count = 0
+
+while retry_count < max_retries:
+    try:
+        from shared.connectors.questdb import QuestDBConnector
+        db = QuestDBConnector()
+        db.create_tables()
+        print('Database tables created successfully')
+        db.close()
+        break
+    except Exception as e:
+        retry_count += 1
+        if retry_count == max_retries:
+            print(f'Failed to create tables after {max_retries} attempts: {e}')
+            sys.exit(1)
+        else:
+            print(f'Connection attempt {retry_count} failed, retrying...')
+            import time
+            time.sleep(2)
 "
+
+# Start monitoring services
+echo "Starting monitoring services..."
+docker-compose up -d prometheus grafana
 
 echo ""
 echo "✅ Setup complete!"
+echo ""
+echo "Services status:"
+docker-compose ps
 echo ""
 echo "Next steps:"
 echo "1. Update .env file with your Binance API credentials (optional)"
@@ -73,4 +120,4 @@ echo "3. Access Grafana at http://localhost:3000 (admin/admin)"
 echo "4. Access QuestDB console at http://localhost:9000"
 echo ""
 echo "To download historical data:"
-echo "  python scripts/download_historical.py 30"
+echo "  python scripts/download_historical.p

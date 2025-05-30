@@ -23,11 +23,25 @@ class QuestDBConnector:
 
         self.http_base_url = f"http://{self.host}:{self.http_port}"
         self._socket = None
-        self._connect()
+        self._connect_with_retry()
+
+    def _connect_with_retry(self, max_retries: int = 5, retry_delay: float = 2.0):
+        for attempt in range(max_retries):
+            try:
+                self._connect()
+                return
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    self.logger.warning(f"Connection attempt {attempt + 1} failed: {e}. Retrying in {retry_delay}s...")
+                    time.sleep(retry_delay)
+                else:
+                    self.logger.error(f"Failed to connect after {max_retries} attempts")
+                    raise
 
     def _connect(self):
         try:
             self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self._socket.settimeout(5.0)
             self._socket.connect((self.host, self.port))
             self.logger.info(f"Connected to QuestDB at {self.host}:{self.port}")
         except Exception as e:
@@ -40,7 +54,7 @@ class QuestDBConnector:
                 self._socket.close()
             except:
                 pass
-        self._connect()
+        self._connect_with_retry()
 
     def write_line(self, line: str):
         try:
@@ -98,27 +112,33 @@ class QuestDBConnector:
 
         self.metrics.record_db_write(table_name, 'success')
 
-    def execute_query(self, query: str) -> List[Dict[str, Any]]:
-        try:
-            response = requests.get(
-                f"{self.http_base_url}/exec",
-                params={'query': query}
-            )
-            response.raise_for_status()
+    def execute_query(self, query: str, retry_count: int = 3) -> List[Dict[str, Any]]:
+        for attempt in range(retry_count):
+            try:
+                response = requests.get(
+                    f"{self.http_base_url}/exec",
+                    params={'query': query},
+                    timeout=30
+                )
+                response.raise_for_status()
 
-            data = response.json()
+                data = response.json()
 
-            if 'dataset' not in data:
-                return []
+                if 'dataset' not in data:
+                    return []
 
-            columns = [col['name'] for col in data['columns']]
-            rows = data['dataset']
+                columns = [col['name'] for col in data['columns']]
+                rows = data['dataset']
 
-            return [dict(zip(columns, row)) for row in rows]
+                return [dict(zip(columns, row)) for row in rows]
 
-        except Exception as e:
-            self.logger.error(f"Query execution failed: {e}")
-            raise
+            except requests.exceptions.RequestException as e:
+                if attempt < retry_count - 1:
+                    self.logger.warning(f"Query failed (attempt {attempt + 1}/{retry_count}): {e}")
+                    time.sleep(1)
+                else:
+                    self.logger.error(f"Query execution failed after {retry_count} attempts: {e}")
+                    raise
 
     def get_latest_timestamp(self, symbol: str, interval: str) -> Optional[int]:
         table_name = f"klines_{interval}"
@@ -130,9 +150,12 @@ class QuestDBConnector:
             LIMIT 1
         """
 
-        result = self.execute_query(query)
-        if result:
-            return int(result[0]['timestamp'])
+        try:
+            result = self.execute_query(query)
+            if result:
+                return int(result[0]['timestamp'])
+        except:
+            pass
         return None
 
     def create_tables(self):
@@ -161,7 +184,7 @@ class QuestDBConnector:
                 self.execute_query(create_query)
                 self.logger.info(f"Created table {table_name}")
             except Exception as e:
-                if "already exists" not in str(e):
+                if "already exists" not in str(e).lower():
                     self.logger.error(f"Failed to create table {table_name}: {e}")
                     raise
 
@@ -187,19 +210,26 @@ class QuestDBConnector:
             LIMIT {limit}
         """
 
-        result = self.execute_query(query)
+        try:
+            result = self.execute_query(query)
 
-        if not result:
+            if not result:
+                return pd.DataFrame()
+
+            df = pd.DataFrame(result)
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='us')
+            df.set_index('timestamp', inplace=True)
+            df.sort_index(inplace=True)
+
+            return df
+        except Exception as e:
+            self.logger.error(f"Failed to get klines dataframe: {e}")
             return pd.DataFrame()
-
-        df = pd.DataFrame(result)
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='us')
-        df.set_index('timestamp', inplace=True)
-        df.sort_index(inplace=True)
-
-        return df
 
     def close(self):
         if self._socket:
-            self._socket.close()
-            self.logger.info("Closed QuestDB connection")
+            try:
+                self._socket.close()
+                self.logger.info("Closed QuestDB connection")
+            except:
+                pass
