@@ -8,6 +8,7 @@ import threading
 from collections import defaultdict
 import pandas as pd
 import numpy as np
+import pytz
 
 from shared.utils.config import Config
 from shared.utils.logging import setup_logger
@@ -185,6 +186,9 @@ class FeatureEngineService:
                     if df.empty:
                         continue
 
+                    if df.index.tz is not None:
+                        df.index = df.index.tz_localize(None)
+
                     features_df = self._calculate_all_features(df, symbol, interval)
 
                     if not features_df.empty:
@@ -198,14 +202,23 @@ class FeatureEngineService:
     def _calculate_all_features(self, df: pd.DataFrame, symbol: str, interval: str) -> pd.DataFrame:
         features_df = df[['open', 'high', 'low', 'close', 'volume']].copy()
 
-        technical_features = self.technical_calculator.calculate(df)
-        features_df = pd.concat([features_df, technical_features], axis=1)
+        try:
+            technical_features = self.technical_calculator.calculate(df)
+            features_df = pd.concat([features_df, technical_features], axis=1)
+        except Exception as e:
+            self.logger.warning(f"Error calculating technical features: {e}")
 
-        custom_features = self.custom_calculator.calculate(df)
-        features_df = pd.concat([features_df, custom_features], axis=1)
+        try:
+            custom_features = self.custom_calculator.calculate(df)
+            features_df = pd.concat([features_df, custom_features], axis=1)
+        except Exception as e:
+            self.logger.warning(f"Error calculating custom features: {e}")
 
-        microstructure_features = self.microstructure_calculator.calculate(df)
-        features_df = pd.concat([features_df, microstructure_features], axis=1)
+        try:
+            microstructure_features = self.microstructure_calculator.calculate(df)
+            features_df = pd.concat([features_df, microstructure_features], axis=1)
+        except Exception as e:
+            self.logger.warning(f"Error calculating microstructure features: {e}")
 
         features_df['symbol'] = symbol
         features_df['feature_version'] = 1
@@ -239,6 +252,8 @@ class FeatureEngineService:
                     elif isinstance(value, (int, float)):
                         if key in ['market_regime', 'feature_version']:
                             numeric_fields.append(f"{key}={int(value)}i")
+                        elif key == 'mfi_14':
+                            numeric_fields.append(f"{key}={float(value)}")
                         else:
                             numeric_fields.append(f"{key}={float(value)}")
 
@@ -283,6 +298,13 @@ class FeatureEngineService:
             df = self.questdb.get_klines_df(symbol, interval, limit=lookback_periods)
 
             if not df.empty:
+                if df.index.tz is not None:
+                    df.index = df.index.tz_localize(None)
+
+                new_timestamp = pd.Timestamp(kline_data['timestamp'], unit='s')
+                if new_timestamp.tz is not None:
+                    new_timestamp = new_timestamp.tz_localize(None)
+
                 new_row = pd.DataFrame([{
                     'open': kline_data['open'],
                     'high': kline_data['high'],
@@ -293,7 +315,7 @@ class FeatureEngineService:
                     'trades': kline_data['trades'],
                     'taker_buy_volume': kline_data['taker_buy_volume'],
                     'taker_buy_quote_volume': kline_data['taker_buy_quote_volume']
-                }], index=[pd.Timestamp(kline_data['timestamp'], unit='s')])
+                }], index=[new_timestamp])
 
                 df = pd.concat([df, new_row])
                 df = df.iloc[-lookback_periods:]
@@ -359,11 +381,12 @@ class FeatureEngineService:
                                 expire=3600
                             )
 
-                            if quality_metrics['missing_percentage'] > 10:
-                                self.logger.warning(
-                                    f"High missing data for {symbol} {interval}: "
-                                    f"{quality_metrics['missing_percentage']:.2f}%"
-                                )
+                            if 'missing_analysis' in quality_metrics and 'missing_percentage' in quality_metrics['missing_analysis']:
+                                if quality_metrics['missing_analysis']['missing_percentage'] > 10:
+                                    self.logger.warning(
+                                        f"High missing data for {symbol} {interval}: "
+                                        f"{quality_metrics['missing_analysis']['missing_percentage']:.2f}%"
+                                    )
 
             except Exception as e:
                 self.logger.error(f"Quality monitoring error: {e}")
