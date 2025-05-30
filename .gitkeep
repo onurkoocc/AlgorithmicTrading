@@ -1,0 +1,8 @@
+# Create these empty files in the following directories:
+
+models/checkpoints/.gitkeep
+results/backtests/.gitkeep
+results/reports/.gitkeep
+logs/.gitkeep
+
+# These files ensure the directories are tracked by git even when empty
