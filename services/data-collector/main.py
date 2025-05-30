@@ -102,9 +102,19 @@ class DataCollectorService:
                             self.logger.info(f"Downloaded {len(klines)} klines for {symbol} {interval}")
 
                             batch_data = [kline.to_dict() for kline in klines]
-                            self.questdb.batch_write_klines(symbol, interval, batch_data)
 
-                            await asyncio.sleep(1)
+                            # Write in smaller chunks for better reliability
+                            max_batch_size = 2000
+                            for i in range(0, len(batch_data), max_batch_size):
+                                batch = batch_data[i:i + max_batch_size]
+                                self.questdb.batch_write_klines(symbol, interval, batch)
+                                await asyncio.sleep(1)
+
+                            # Verify data was written
+                            count = self.questdb.verify_data(symbol, interval)
+                            self.logger.info(f"Verified {count} total records in database for {symbol} {interval}")
+
+                            await asyncio.sleep(2)
 
                 except Exception as e:
                     self.logger.error(f"Error downloading historical data for {symbol} {interval}: {e}")
@@ -179,6 +189,16 @@ class DataCollectorService:
                     self.logger.warning(
                         f"Stream count mismatch: {active_streams}/{expected_streams}"
                     )
+
+                # Log data counts periodically
+                for symbol in self.symbols:
+                    for interval in ['1m', '1h', '1d']:
+                        try:
+                            count = self.questdb.verify_data(symbol, interval)
+                            if count > 0:
+                                self.logger.debug(f"Data count for {symbol} {interval}: {count}")
+                        except:
+                            pass
 
                 if self.redis:
                     self.redis.set_json('health:data-collector', {
