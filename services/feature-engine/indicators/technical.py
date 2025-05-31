@@ -44,76 +44,97 @@ class TechnicalIndicatorCalculator:
         for period in self.indicators_config['rsi']:
             features[f'rsi_{period}'] = ta.rsi(df['close'], length=period)
 
+        macd_config = self.indicators_config['macd']
         macd_result = ta.macd(
             df['close'],
-            fast=self.indicators_config['macd']['fast'],
-            slow=self.indicators_config['macd']['slow'],
-            signal=self.indicators_config['macd']['signal']
+            fast=macd_config['fast'],
+            slow=macd_config['slow'],
+            signal=macd_config['signal']
         )
-        if macd_result is not None:
-            features['macd'] = macd_result['MACD_12_26_9']
-            features['macd_signal'] = macd_result['MACDs_12_26_9']
-            features['macd_hist'] = macd_result['MACDh_12_26_9']
+        if macd_result is not None and not macd_result.empty:
+            features[f'macd'] = macd_result[f'MACD_{macd_config["fast"]}_{macd_config["slow"]}_{macd_config["signal"]}']
+            features[f'macd_signal'] = macd_result[f'MACDs_{macd_config["fast"]}_{macd_config["slow"]}_{macd_config["signal"]}']
+            features[f'macd_hist'] = macd_result[f'MACDh_{macd_config["fast"]}_{macd_config["slow"]}_{macd_config["signal"]}']
 
-        features[f'cci_{self.indicators_config["cci"]["length"]}'] = ta.cci(
+        cci_length = self.indicators_config['cci']['length']
+        features[f'cci_{cci_length}'] = ta.cci(
             df['high'], df['low'], df['close'],
-            length=self.indicators_config['cci']['length']
+            length=cci_length
         )
 
+        stoch_config = self.indicators_config['stoch']
         stoch_result = ta.stoch(
             df['high'], df['low'], df['close'],
-            k=self.indicators_config['stoch']['k'],
-            d=self.indicators_config['stoch']['d'],
-            smooth_k=self.indicators_config['stoch']['smooth_k']
+            k=stoch_config['k'],
+            d=stoch_config['d'],
+            smooth_k=stoch_config['smooth_k']
         )
-        if stoch_result is not None:
-            features['stoch_k'] = stoch_result.iloc[:, 0]
-            features['stoch_d'] = stoch_result.iloc[:, 1]
+        if stoch_result is not None and not stoch_result.empty:
+            k_col = f'STOCHk_{stoch_config["k"]}_{stoch_config["d"]}_{stoch_config["smooth_k"]}'
+            d_col = f'STOCHd_{stoch_config["k"]}_{stoch_config["d"]}_{stoch_config["smooth_k"]}'
+            if k_col in stoch_result.columns and d_col in stoch_result.columns:
+                features['stoch_k'] = stoch_result[k_col]
+                features['stoch_d'] = stoch_result[d_col]
+            elif len(stoch_result.columns) >= 2:
+                features['stoch_k'] = stoch_result.iloc[:, 0]
+                features['stoch_d'] = stoch_result.iloc[:, 1]
 
+
+        willr_length = self.indicators_config['williams_r']['length']
         features['williams_r'] = ta.willr(
             df['high'], df['low'], df['close'],
-            length=self.indicators_config['williams_r']['length']
+            length=willr_length
         )
 
+        mfi_length = self.indicators_config['mfi']['length']
+        mfi_col_name = f'mfi_{mfi_length}'
         try:
-            mfi_result = ta.mfi(
-                df['high'], df['low'], df['close'], df['volume'],
-                length=self.indicators_config['mfi']['length']
-            )
-            if mfi_result is not None and len(mfi_result) > 0:
-                mfi_col_name = f'mfi_{self.indicators_config["mfi"]["length"]}'
-                if isinstance(mfi_result, pd.DataFrame):
-                    mfi_series = mfi_result.iloc[:, 0]
-                else:
-                    mfi_series = mfi_result
+            high_s = df['high'].astype(np.float64)
+            low_s = df['low'].astype(np.float64)
+            close_s = df['close'].astype(np.float64)
+            volume_s = df['volume'].fillna(0).astype(np.float64)
+            volume_for_mfi = volume_s / 1e6
 
-                features[mfi_col_name] = mfi_series.astype(np.float64)
+            mfi_result_series = ta.mfi(
+                high=high_s, low=low_s, close=close_s, volume=volume_for_mfi,
+                length=mfi_length
+            )
+
+            if mfi_result_series is not None and not mfi_result_series.empty:
+                final_mfi_values = mfi_result_series.astype(np.float64).fillna(50.0).clip(lower=0.0, upper=100.0)
+                features[mfi_col_name] = final_mfi_values
+            else:
+                features[mfi_col_name] = pd.Series(50.0, index=df.index, dtype=np.float64)
+
         except Exception as e:
-            features[f'mfi_{self.indicators_config["mfi"]["length"]}'] = np.nan
+            features[mfi_col_name] = pd.Series(50.0, index=df.index, dtype=np.float64)
 
         return features
 
     def _calculate_volatility_indicators(self, df: pd.DataFrame, features: pd.DataFrame) -> pd.DataFrame:
+        bb_config = self.indicators_config['bb']
         bb_result = ta.bbands(
             df['close'],
-            length=self.indicators_config['bb']['length'],
-            std=self.indicators_config['bb']['std']
+            length=bb_config['length'],
+            std=bb_config['std']
         )
-        if bb_result is not None:
-            features['bb_lower'] = bb_result[
-                f'BBL_{self.indicators_config["bb"]["length"]}_{self.indicators_config["bb"]["std"]}.0']
-            features['bb_middle'] = bb_result[
-                f'BBM_{self.indicators_config["bb"]["length"]}_{self.indicators_config["bb"]["std"]}.0']
-            features['bb_upper'] = bb_result[
-                f'BBU_{self.indicators_config["bb"]["length"]}_{self.indicators_config["bb"]["std"]}.0']
+        if bb_result is not None and not bb_result.empty:
+            bb_lower_col = f'BBL_{bb_config["length"]}_{bb_config["std"]}.0'
+            bb_middle_col = f'BBM_{bb_config["length"]}_{bb_config["std"]}.0'
+            bb_upper_col = f'BBU_{bb_config["length"]}_{bb_config["std"]}.0'
+
+            features['bb_lower'] = bb_result[bb_lower_col]
+            features['bb_middle'] = bb_result[bb_middle_col]
+            features['bb_upper'] = bb_result[bb_upper_col]
 
             bb_range = features['bb_upper'] - features['bb_lower']
-            features['bb_width'] = bb_range
+            features['bb_width'] = bb_range.fillna(0)
             features['bb_percent'] = np.where(
-                bb_range != 0,
+                bb_range.fillna(0) != 0,
                 (df['close'] - features['bb_lower']) / bb_range,
                 0.5
             )
+            features['bb_percent'] = features['bb_percent'].fillna(0.5)
 
         for period in self.indicators_config['atr']:
             features[f'atr_{period}'] = ta.atr(df['high'], df['low'], df['close'], length=period)
@@ -121,29 +142,30 @@ class TechnicalIndicatorCalculator:
         return features
 
     def _calculate_volume_indicators(self, df: pd.DataFrame, features: pd.DataFrame) -> pd.DataFrame:
-        features['obv'] = ta.obv(df['close'], df['volume'])
+        features['obv'] = ta.obv(df['close'], df['volume'].fillna(0).astype(np.float64))
+        features['vwap'] = ta.vwap(df['high'], df['low'], df['close'], df['volume'].fillna(0).astype(np.float64))
 
-        features['vwap'] = ta.vwap(df['high'], df['low'], df['close'], df['volume'])
-
-        features['volume_sma_20'] = ta.sma(df['volume'], length=20)
+        volume_sma_20 = ta.sma(df['volume'].fillna(0).astype(np.float64), length=20)
+        features['volume_sma_20'] = volume_sma_20
         features['volume_ratio'] = np.where(
-            features['volume_sma_20'] > 0,
-            df['volume'] / features['volume_sma_20'],
+            volume_sma_20.fillna(0) > 0,
+            df['volume'].fillna(0).astype(np.float64) / volume_sma_20,
             1.0
         )
+        features['volume_ratio'] = features['volume_ratio'].fillna(1.0)
 
         return features
 
     def _calculate_trend_indicators(self, df: pd.DataFrame, features: pd.DataFrame) -> pd.DataFrame:
+        adx_length = self.indicators_config['adx']['length']
         adx_result = ta.adx(
             df['high'], df['low'], df['close'],
-            length=self.indicators_config['adx']['length']
+            length=adx_length
         )
-        if adx_result is not None:
-            features[f'adx_{self.indicators_config["adx"]["length"]}'] = adx_result[
-                f'ADX_{self.indicators_config["adx"]["length"]}']
-            features['plus_di'] = adx_result[f'DMP_{self.indicators_config["adx"]["length"]}']
-            features['minus_di'] = adx_result[f'DMN_{self.indicators_config["adx"]["length"]}']
+        if adx_result is not None and not adx_result.empty:
+            features[f'adx_{adx_length}'] = adx_result[f'ADX_{adx_length}']
+            features['plus_di'] = adx_result[f'DMP_{adx_length}']
+            features['minus_di'] = adx_result[f'DMN_{adx_length}']
 
         pivot_result = self._calculate_pivot_points(df)
         for key, value in pivot_result.items():

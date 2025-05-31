@@ -4,11 +4,8 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="81427cb1-1f01-45c2-9d19-eedb5dbc97cb" name="Changes" comment="mfi fix">
+    <list default="true" id="81427cb1-1f01-45c2-9d19-eedb5dbc97cb" name="Changes" comment="mfi fix-2">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/docker-compose.yml" beforeDir="false" afterPath="$PROJECT_DIR$/docker-compose.yml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/services/feature-engine/indicators/custom.py" beforeDir="false" afterPath="$PROJECT_DIR$/services/feature-engine/indicators/custom.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/services/feature-engine/indicators/microstructure.py" beforeDir="false" afterPath="$PROJECT_DIR$/services/feature-engine/indicators/microstructure.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/services/feature-engine/indicators/technical.py" beforeDir="false" afterPath="$PROJECT_DIR$/services/feature-engine/indicators/technical.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
@@ -85,7 +82,7 @@
       <updated>1748552109687</updated>
       <workItem from="1748552110721" duration="4239000" />
       <workItem from="1748588316344" duration="935000" />
-      <workItem from="1748708569123" duration="1569000" />
+      <workItem from="1748708569123" duration="2385000" />
     </task>
     <task id="LOCAL-00001" summary="first commit">
       <option name="closed" value="true" />
@@ -151,7 +148,15 @@
       <option name="project" value="LOCAL" />
       <updated>1748709727159</updated>
     </task>
-    <option name="localTasksCounter" value="9" />
+    <task id="LOCAL-00009" summary="mfi fix-2">
+      <option name="closed" value="true" />
+      <created>1748710153663</created>
+      <option name="number" value="00009" />
+      <option name="presentableId" value="LOCAL-00009" />
+      <option name="project" value="LOCAL" />
+      <updated>1748710153663</updated>
+    </task>
+    <option name="localTasksCounter" value="10" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -177,6 +182,7 @@
     <MESSAGE value="minor fix for more data" />
     <MESSAGE value="latest minor" />
     <MESSAGE value="mfi fix" />
-    <option name="LAST_COMMIT_MESSAGE" value="mfi fix" />
+    <MESSAGE value="mfi fix-2" />
+    <option name="LAST_COMMIT_MESSAGE" value="mfi fix-2" />
   </component>
 </project>
