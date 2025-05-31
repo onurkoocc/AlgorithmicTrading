@@ -161,17 +161,39 @@ class QuestDBConnector:
                     error_msg = f"Query failed with status {response.status_code}: {response.text}"
                     if "could not mmap" in response.text:
                         self.logger.warning(f"Memory mapping error, attempting to recover: {error_msg}")
-                        time.sleep(2)
-                        continue
+
+                        if attempt < retry_count - 1:
+                            time.sleep(5)
+
+                            table_match = query.split('FROM')[1].split('WHERE')[0].strip()
+                            if table_match:
+                                try:
+                                    self._vacuum_table(table_match)
+                                except:
+                                    pass
+                            continue
                     raise Exception(error_msg)
 
             except Exception as e:
                 if attempt < retry_count - 1:
                     self.logger.warning(f"Query failed (attempt {attempt + 1}/{retry_count}): {e}")
-                    time.sleep(1)
+                    time.sleep(2)
                 else:
                     self.logger.error(f"Query execution failed after {retry_count} attempts: {e}")
                     raise
+
+    def _vacuum_table(self, table_name: str):
+        try:
+            vacuum_query = f"VACUUM TABLE {table_name}"
+            response = requests.get(
+                f"{self.http_base_url}/exec",
+                params={'query': vacuum_query},
+                timeout=10
+            )
+            if response.status_code == 200:
+                self.logger.info(f"Vacuumed table {table_name}")
+        except Exception as e:
+            self.logger.warning(f"Failed to vacuum table {table_name}: {e}")
 
     def get_latest_timestamp(self, symbol: str, interval: str) -> Optional[int]:
         table_name = f"klines_{interval}"
@@ -346,9 +368,16 @@ class QuestDBConnector:
                 return df
             except Exception as e:
                 if "could not mmap" in str(e) and attempt < max_retries - 1:
-                    self.logger.warning(f"Memory mapping error on attempt {attempt + 1}, retrying...")
-                    time.sleep(3)
+                    self.logger.warning(f"Memory mapping error on attempt {attempt + 1}, attempting recovery...")
+                    time.sleep(5)
+
+                    try:
+                        self._vacuum_table(table_name)
+                        self.optimize_table(table_name)
+                    except:
+                        pass
                     continue
+
                 self.logger.error(f"Failed to get features dataframe: {e}")
                 return pd.DataFrame()
 
@@ -356,8 +385,17 @@ class QuestDBConnector:
 
     def optimize_table(self, table_name: str):
         try:
-            optimize_query = f"ALTER TABLE {table_name} SET PARAM o3MaxLag = 300s"
-            self.execute_query(optimize_query)
+            optimize_queries = [
+                f"ALTER TABLE {table_name} SET PARAM o3MaxLag = 600s",
+                f"ALTER TABLE {table_name} SET PARAM maxUncommittedRows = 100000"
+            ]
+
+            for query in optimize_queries:
+                try:
+                    self.execute_query(query)
+                except:
+                    pass
+
             self.logger.info(f"Optimized table {table_name}")
         except Exception as e:
             self.logger.warning(f"Failed to optimize table {table_name}: {e}")

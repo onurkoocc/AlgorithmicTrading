@@ -44,8 +44,8 @@ class FeatureEngineService:
         self.quality_monitor = DataQualityMonitor()
 
         self.feature_buffer = defaultdict(lambda: defaultdict(list))
-        self.buffer_size = self.config.get('feature_engine.buffer_size', 5000)
-        self.flush_interval = self.config.get('feature_engine.flush_interval', 10)
+        self.buffer_size = self.config.get('feature_engine.buffer_size', 2500)
+        self.flush_interval = self.config.get('feature_engine.flush_interval', 15)
 
         self.is_running = False
         self.tasks = []
@@ -195,7 +195,7 @@ class FeatureEngineService:
                     depth_imbalance DOUBLE,
                     feature_version LONG,
                     timestamp TIMESTAMP
-                ) timestamp(timestamp) PARTITION BY DAY WAL;
+                ) timestamp(timestamp) PARTITION BY DAY WAL DEDUP UPSERT KEYS(symbol, timestamp);
             """
 
             try:
@@ -214,7 +214,9 @@ class FeatureEngineService:
         for symbol in self.symbols:
             for interval in self.intervals:
                 try:
-                    max_rows = 5000 if interval in ['1m', '3m', '5m'] else 10000
+                    max_rows = self.config.get('feature_engine.max_historical_rows', 3000)
+                    if interval in ['1m', '3m', '5m']:
+                        max_rows = min(max_rows, 3000)
                     df = self.questdb.get_klines_df(symbol, interval, limit=max_rows)
 
                     if df.empty:
@@ -223,7 +225,9 @@ class FeatureEngineService:
                     if df.index.tz is not None:
                         df.index = df.index.tz_localize(None)
 
-                    batch_size = 1000
+                    df = df[~df.index.duplicated(keep='first')]
+
+                    batch_size = self.config.get('feature_engine.batch_size', 500)
                     total_rows = len(df)
 
                     for start_idx in range(0, total_rows, batch_size):
@@ -247,6 +251,9 @@ class FeatureEngineService:
                     self.logger.error(f"Error calculating historical features for {symbol} {interval}: {e}")
 
     def _calculate_all_features(self, df: pd.DataFrame, symbol: str, interval: str) -> pd.DataFrame:
+        if df.index.duplicated().any():
+            df = df[~df.index.duplicated(keep='first')]
+
         features_df = df[['open', 'high', 'low', 'close', 'volume']].copy()
 
         try:
@@ -364,7 +371,7 @@ class FeatureEngineService:
 
             kline_data = message['data']
 
-            lookback_periods = max(200, self.config.get('feature_engine.lookback_periods', 500))
+            lookback_periods = max(200, self.config.get('feature_engine.lookback_periods', 300))
 
             df = self.questdb.get_klines_df(symbol, interval, limit=lookback_periods)
 
@@ -372,9 +379,14 @@ class FeatureEngineService:
                 if df.index.tz is not None:
                     df.index = df.index.tz_localize(None)
 
+                df = df[~df.index.duplicated(keep='first')]
+
                 new_timestamp = pd.Timestamp(kline_data['timestamp'], unit='s')
                 if new_timestamp.tz is not None:
                     new_timestamp = new_timestamp.tz_localize(None)
+
+                if new_timestamp in df.index:
+                    df = df.drop(new_timestamp)
 
                 new_row = pd.DataFrame([{
                     'open': kline_data['open'],
@@ -407,9 +419,18 @@ class FeatureEngineService:
                         await self.flush_buffer()
 
                     latest_dict = latest_features.reset_index().to_dict('records')[0]
-                    if 'timestamp' in latest_dict:
-                        if isinstance(latest_dict['timestamp'], pd.Timestamp):
-                            latest_dict['timestamp'] = latest_dict['timestamp'].isoformat()
+
+                    for key, value in latest_dict.items():
+                        if isinstance(value, pd.Timestamp):
+                            latest_dict[key] = value.isoformat()
+                        elif isinstance(value, np.ndarray):
+                            latest_dict[key] = value.tolist()
+                        elif isinstance(value, (np.int64, np.int32)):
+                            latest_dict[key] = int(value)
+                        elif isinstance(value, (np.float64, np.float32)):
+                            latest_dict[key] = float(value)
+                        elif pd.isna(value):
+                            latest_dict[key] = None
 
                     self.redis.publish(f"features:{symbol}:{interval}", latest_dict)
 
@@ -429,6 +450,10 @@ class FeatureEngineService:
 
                 try:
                     combined_df = pd.concat(features_list)
+
+                    if combined_df.index.duplicated().any():
+                        combined_df = combined_df[~combined_df.index.duplicated(keep='first')]
+
                     self._store_features(symbol, interval, combined_df)
 
                 except Exception as e:

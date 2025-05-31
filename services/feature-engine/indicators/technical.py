@@ -79,7 +79,6 @@ class TechnicalIndicatorCalculator:
                 features['stoch_k'] = stoch_result.iloc[:, 0]
                 features['stoch_d'] = stoch_result.iloc[:, 1]
 
-
         willr_length = self.indicators_config['williams_r']['length']
         features['williams_r'] = ta.willr(
             df['high'], df['low'], df['close'],
@@ -95,14 +94,16 @@ class TechnicalIndicatorCalculator:
             volume_s = df['volume'].fillna(0).astype(np.float64)
             volume_for_mfi = volume_s / 1e6
 
-            mfi_result_series = ta.mfi(
+            mfi_result = ta.mfi(
                 high=high_s, low=low_s, close=close_s, volume=volume_for_mfi,
                 length=mfi_length
             )
 
-            if mfi_result_series is not None and not mfi_result_series.empty:
-                final_mfi_values = mfi_result_series.astype(np.float64).fillna(50.0).clip(lower=0.0, upper=100.0)
-                features[mfi_col_name] = final_mfi_values
+            if mfi_result is not None and not mfi_result.empty:
+                if isinstance(mfi_result, pd.Series):
+                    features[mfi_col_name] = mfi_result.astype(np.float64).fillna(50.0).clip(lower=0.0, upper=100.0)
+                else:
+                    features[mfi_col_name] = pd.Series(mfi_result, index=df.index, dtype=np.float64).fillna(50.0).clip(lower=0.0, upper=100.0)
             else:
                 features[mfi_col_name] = pd.Series(50.0, index=df.index, dtype=np.float64)
 
