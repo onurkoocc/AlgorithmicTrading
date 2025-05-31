@@ -211,6 +211,22 @@ class QuestDBConnector:
             self.logger.warning(f"Failed to get latest timestamp for {symbol} {interval}: {e}")
         return None
 
+    def get_timestamp_range(self, symbol: str, interval: str) -> Tuple[Optional[int], Optional[int]]:
+        table_name = f"klines_{interval}"
+        query = f"""
+            SELECT min(timestamp) as min_ts, max(timestamp) as max_ts 
+            FROM {table_name} 
+            WHERE symbol = '{symbol}'
+        """
+
+        try:
+            result = self.execute_query(query)
+            if result and result[0]['min_ts'] is not None:
+                return (int(result[0]['min_ts']), int(result[0]['max_ts']))
+        except Exception as e:
+            self.logger.warning(f"Failed to get timestamp range for {symbol} {interval}: {e}")
+        return (None, None)
+
     def create_tables(self):
         intervals = self.config.intervals
 
@@ -284,6 +300,38 @@ class QuestDBConnector:
             return df
         except Exception as e:
             self.logger.error(f"Failed to get klines dataframe: {e}")
+            return pd.DataFrame()
+
+    def get_klines_by_timestamp_range(self, symbol: str, interval: str,
+                                      start_ts: int, end_ts: int,
+                                      limit: Optional[int] = None) -> pd.DataFrame:
+        table_name = f"klines_{interval}"
+
+        query = f"""
+            SELECT * FROM {table_name}
+            WHERE symbol = '{symbol}'
+            AND timestamp >= {start_ts}
+            AND timestamp < {end_ts}
+            ORDER BY timestamp ASC
+        """
+
+        if limit:
+            query += f" LIMIT {limit}"
+
+        try:
+            result = self.execute_query(query)
+
+            if not result:
+                return pd.DataFrame()
+
+            df = pd.DataFrame(result)
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ns')
+            df.set_index('timestamp', inplace=True)
+            df.sort_index(inplace=True)
+
+            return df
+        except Exception as e:
+            self.logger.error(f"Failed to get klines by timestamp range: {e}")
             return pd.DataFrame()
 
     def close(self):

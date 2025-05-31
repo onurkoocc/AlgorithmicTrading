@@ -4,10 +4,10 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="81427cb1-1f01-45c2-9d19-eedb5dbc97cb" name="Changes" comment="refactor">
+    <list default="true" id="81427cb1-1f01-45c2-9d19-eedb5dbc97cb" name="Changes" comment="remove feature calc limit">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/config/config.yaml" beforeDir="false" afterPath="$PROJECT_DIR$/config/config.yaml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/services/feature-engine/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/services/feature-engine/main.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/shared/connectors/questdb.py" beforeDir="false" afterPath="$PROJECT_DIR$/shared/connectors/questdb.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -85,7 +85,7 @@
       <workItem from="1748588316344" duration="935000" />
       <workItem from="1748708569123" duration="5581000" />
       <workItem from="1748716616167" duration="14000" />
-      <workItem from="1748728699406" duration="2133000" />
+      <workItem from="1748728699406" duration="3384000" />
     </task>
     <task id="LOCAL-00001" summary="first commit">
       <option name="closed" value="true" />
@@ -183,7 +183,15 @@
       <option name="project" value="LOCAL" />
       <updated>1748729992577</updated>
     </task>
-    <option name="localTasksCounter" value="13" />
+    <task id="LOCAL-00013" summary="remove feature calc limit">
+      <option name="closed" value="true" />
+      <created>1748731786644</created>
+      <option name="number" value="00013" />
+      <option name="presentableId" value="LOCAL-00013" />
+      <option name="project" value="LOCAL" />
+      <updated>1748731786644</updated>
+    </task>
+    <option name="localTasksCounter" value="14" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -212,6 +220,7 @@
     <MESSAGE value="mfi fix-2" />
     <MESSAGE value="mfi fix-3" />
     <MESSAGE value="refactor" />
-    <option name="LAST_COMMIT_MESSAGE" value="refactor" />
+    <MESSAGE value="remove feature calc limit" />
+    <option name="LAST_COMMIT_MESSAGE" value="remove feature calc limit" />
   </component>
 </project>

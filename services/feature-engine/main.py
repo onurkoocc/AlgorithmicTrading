@@ -253,65 +253,81 @@ class FeatureEngineService:
 
                     self.logger.info(f"Processing {total_klines} klines for {symbol} {interval}")
 
+                    if total_klines == 0:
+                        continue
+
+                    min_ts, max_ts = self.questdb.get_timestamp_range(symbol, interval)
+                    if min_ts is None or max_ts is None:
+                        self.logger.warning(f"No data found for {symbol} {interval}")
+                        continue
+
                     chunk_size = 50000
                     lookback_size = 200
                     processed_timestamps = set()
 
-                    for offset in range(0, total_klines, chunk_size):
-                        real_offset = max(0, offset - lookback_size)
+                    interval_ms = self._get_interval_ms(interval)
+                    chunk_duration = interval_ms * chunk_size
 
-                        query = f"""
-                            SELECT * FROM {table_name}
-                            WHERE symbol = '{symbol}'
-                            ORDER BY timestamp ASC
-                            LIMIT {chunk_size + lookback_size} OFFSET {real_offset}
-                        """
+                    current_start = min_ts
 
-                        result = self.questdb.execute_query(query)
-                        if not result:
-                            break
+                    while current_start < max_ts:
+                        lookback_start = max(min_ts, current_start - (lookback_size * interval_ms))
+                        chunk_end = min(max_ts, current_start + chunk_duration)
 
-                        df = pd.DataFrame(result)
-                        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ns')
-                        df.set_index('timestamp', inplace=True)
-                        df.sort_index(inplace=True)
+                        df = self.questdb.get_klines_by_timestamp_range(
+                            symbol, interval, lookback_start, chunk_end
+                        )
+
+                        if df.empty:
+                            current_start = chunk_end
+                            continue
 
                         if df.index.tz is not None:
                             df.index = df.index.tz_localize(None)
 
                         df = df[~df.index.duplicated(keep='first')]
 
-                        batch_size = self.config.get('feature_engine.batch_size', 500)
-                        start_processing_idx = lookback_size if offset > 0 else 0
+                        features_df = self._calculate_all_features(df, symbol, interval)
 
-                        for start_idx in range(start_processing_idx, len(df), batch_size):
-                            end_idx = min(start_idx + batch_size, len(df))
+                        if not features_df.empty:
+                            new_features = features_df[features_df.index >= pd.Timestamp(current_start, unit='ns')]
+                            new_features = new_features[~new_features.index.isin(processed_timestamps)]
 
-                            batch_lookback_start = max(0, start_idx - lookback_size)
-                            batch_df = df.iloc[batch_lookback_start:end_idx].copy()
-
-                            features_df = self._calculate_all_features(batch_df, symbol, interval)
-
-                            if not features_df.empty:
-                                features_to_store = features_df.iloc[-(end_idx - start_idx):].copy()
-
-                                new_features = features_to_store[~features_to_store.index.isin(processed_timestamps)]
-
-                                if not new_features.empty:
-                                    self._store_features(symbol, interval, new_features)
-                                    processed_timestamps.update(new_features.index)
-
-                            await asyncio.sleep(0.1)
+                            if not new_features.empty:
+                                self._store_features(symbol, interval, new_features)
+                                processed_timestamps.update(new_features.index)
 
                         self.logger.info(
-                            f"Processed {len(processed_timestamps)} features for {symbol} {interval} (offset: {offset})")
-                        await asyncio.sleep(1)
+                            f"Processed chunk for {symbol} {interval}: "
+                            f"{pd.Timestamp(current_start, unit='ns')} to {pd.Timestamp(chunk_end, unit='ns')}"
+                        )
+
+                        current_start = chunk_end
+                        await asyncio.sleep(0.5)
 
                     self.logger.info(
-                        f"Completed historical features for {symbol} {interval}: {len(processed_timestamps)} total features")
+                        f"Completed historical features for {symbol} {interval}: {len(processed_timestamps)} total features"
+                    )
 
                 except Exception as e:
                     self.logger.error(f"Error calculating historical features for {symbol} {interval}: {e}")
+
+    def _get_interval_ms(self, interval: str) -> int:
+        interval_map = {
+            '1m': 60000,
+            '3m': 180000,
+            '5m': 300000,
+            '15m': 900000,
+            '30m': 1800000,
+            '1h': 3600000,
+            '2h': 7200000,
+            '4h': 14400000,
+            '6h': 21600000,
+            '8h': 28800000,
+            '12h': 43200000,
+            '1d': 86400000
+        }
+        return interval_map.get(interval, 60000)
 
     def _calculate_all_features(self, df: pd.DataFrame, symbol: str, interval: str) -> pd.DataFrame:
         if df.index.duplicated().any():
