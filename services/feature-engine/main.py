@@ -273,6 +273,10 @@ class FeatureEngineService:
         features_df = features_df.replace([np.inf, -np.inf], np.nan)
 
         numeric_columns = features_df.select_dtypes(include=[np.number]).columns
+        for col in numeric_columns:
+            if features_df[col].dtype != np.float64 and col not in ['feature_version', 'market_regime']:
+                features_df[col] = features_df[col].astype(np.float64)
+
         features_df[numeric_columns] = features_df[numeric_columns].ffill().bfill()
 
         return features_df
