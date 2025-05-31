@@ -75,6 +75,12 @@ services:
       - TZ=UTC
     networks:
       - algo-net
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import sys; sys.path.append(\"/app\"); from shared.connectors.redis import RedisConnector; r = RedisConnector(); h = r.get_json(\"health:data-collector\"); sys.exit(0 if h and h.get(\"data_initialized\") else 1)'"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
     deploy:
       resources:
         limits:
@@ -93,7 +99,7 @@ services:
       redis:
         condition: service_healthy
       data-collector:
-        condition: service_started
+        condition: service_healthy
     volumes:
       - ./config:/app/config:ro
     environment:

@@ -1,8 +1,8 @@
 import asyncio
 import signal
 import sys
-from datetime import datetime, timedelta
-import time
+from datetime import datetime, timedelta, time
+import time as time_module
 from typing import Dict, Any, List
 import threading
 from queue import Empty
@@ -37,6 +37,7 @@ class DataCollectorService:
 
         self.is_running = False
         self.tasks = []
+        self.data_initialized = False
 
     def _init_connections(self, max_retries: int = 10, retry_delay: float = 3.0):
         for attempt in range(max_retries):
@@ -60,7 +61,7 @@ class DataCollectorService:
                 self.logger.warning(f"Connection attempt {attempt + 1} failed: {e}")
                 if attempt < max_retries - 1:
                     self.logger.info(f"Retrying in {retry_delay} seconds...")
-                    time.sleep(retry_delay)
+                    time_module.sleep(retry_delay)
                 else:
                     self.logger.error("Failed to initialize connections after all retries")
                     return False
@@ -74,13 +75,23 @@ class DataCollectorService:
             raise Exception("Failed to initialize database connections")
 
         self.questdb.create_tables()
-
         self.questdb.wait_for_commit(3)
 
-        await self._download_missing_historical_data()
+        await self._initial_data_load()
 
-    async def _download_missing_historical_data(self):
-        self.logger.info("Checking for missing historical data")
+        self.redis.set_json('data_initialization_status', {
+            'status': 'completed',
+            'timestamp': time_module.time(),
+            'symbols': self.symbols,
+            'intervals': self.intervals
+        }, expire=86400)
+
+        self.redis.publish('data_initialization', 'completed')
+        self.data_initialized = True
+        self.logger.info("Data initialization completed, signaling feature engine")
+
+    async def _initial_data_load(self):
+        self.logger.info("Performing initial data load")
 
         historical_days = self.config.get('data_collection.historical_days', 365)
 
@@ -96,7 +107,7 @@ class DataCollectorService:
                     else:
                         start_time = int((datetime.now() - timedelta(days=historical_days)).timestamp() * 1000)
 
-                    end_time = int(time.time() * 1000)
+                    end_time = int(time_module.time() * 1000)
 
                     if end_time - start_time > 60000:
                         self.logger.info(f"Downloading historical data for {symbol} {interval}")
@@ -120,6 +131,23 @@ class DataCollectorService:
 
                 except Exception as e:
                     self.logger.error(f"Error downloading historical data for {symbol} {interval}: {e}")
+
+    async def scheduled_data_reload(self):
+        while self.is_running:
+            now = datetime.now()
+            target_time = now.replace(hour=3, minute=0, second=0, microsecond=0)
+
+            if now > target_time:
+                target_time += timedelta(days=1)
+
+            wait_seconds = (target_time - now).total_seconds()
+            self.logger.info(f"Next data reload scheduled at {target_time}, waiting {wait_seconds / 3600:.1f} hours")
+
+            await asyncio.sleep(wait_seconds)
+
+            if self.is_running:
+                self.logger.info("Starting scheduled data reload at 3 AM")
+                await self._initial_data_load()
 
     def _get_interval_ms(self, interval: str) -> int:
         interval_map = {
@@ -216,23 +244,13 @@ class DataCollectorService:
                         f"Stream count mismatch: {active_streams}/{expected_streams}"
                     )
 
-                for symbol in self.symbols:
-                    for interval in ['1m', '1h', '1d']:
-                        if interval not in self.intervals:
-                            continue
-                        try:
-                            count = self.questdb.verify_data(symbol, interval)
-                            if count > 0:
-                                self.logger.debug(f"Data count for {symbol} {interval}: {count}")
-                        except:
-                            pass
-
                 if self.redis:
                     self.redis.set_json('health:data-collector', {
                         'status': 'healthy' if redis_healthy else 'degraded',
-                        'timestamp': time.time(),
+                        'timestamp': time_module.time(),
                         'active_streams': active_streams,
-                        'buffer_size': self.total_buffer_items
+                        'buffer_size': self.total_buffer_items,
+                        'data_initialized': self.data_initialized
                     }, expire=60)
 
             except Exception as e:
@@ -249,6 +267,7 @@ class DataCollectorService:
         self.tasks.append(asyncio.create_task(self.process_data()))
         self.tasks.append(asyncio.create_task(self.periodic_flush()))
         self.tasks.append(asyncio.create_task(self.health_check()))
+        self.tasks.append(asyncio.create_task(self.scheduled_data_reload()))
 
         self.logger.info("Data collector service started")
 

@@ -49,6 +49,7 @@ class FeatureEngineService:
 
         self.is_running = False
         self.tasks = []
+        self.data_initialized = False
 
     def _init_connections(self, max_retries: int = 10, retry_delay: float = 3.0):
         for attempt in range(max_retries):
@@ -79,15 +80,46 @@ class FeatureEngineService:
 
         return False
 
+    async def wait_for_data_initialization(self):
+        self.logger.info("Waiting for data initialization to complete...")
+
+        init_status = self.redis.get_json('data_initialization_status')
+        if init_status and init_status.get('status') == 'completed':
+            self.logger.info("Data already initialized, proceeding with feature calculation")
+            return
+
+        init_channel = self.redis.client.pubsub()
+        init_channel.subscribe('data_initialization')
+
+        timeout = 300
+        start_time = time.time()
+
+        while time.time() - start_time < timeout:
+            message = init_channel.get_message(timeout=1.0)
+            if message and message['type'] == 'message':
+                if message['data'].decode('utf-8') == 'completed':
+                    self.logger.info("Received data initialization completion signal")
+                    init_channel.close()
+                    return
+
+            await asyncio.sleep(1)
+
+        init_channel.close()
+        self.logger.warning("Data initialization timeout, proceeding anyway")
+
     async def initialize(self):
         self.logger.info("Initializing feature engine service")
 
         if not self._init_connections():
             raise Exception("Failed to initialize database connections")
 
+        await self.wait_for_data_initialization()
+
         self._create_feature_tables()
 
         await self._calculate_historical_features()
+
+        self.data_initialized = True
 
     def _create_feature_tables(self):
         for interval in self.intervals:
