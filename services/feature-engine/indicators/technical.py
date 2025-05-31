@@ -75,16 +75,21 @@ class TechnicalIndicatorCalculator:
             length=self.indicators_config['williams_r']['length']
         )
 
-        mfi_result = ta.mfi(
-            df['high'], df['low'], df['close'], df['volume'],
-            length=self.indicators_config['mfi']['length']
-        )
-        if mfi_result is not None:
-            mfi_values = mfi_result.values.flatten()
-            features[f'mfi_{self.indicators_config["mfi"]["length"]}'] = pd.Series(
-                mfi_values.astype(np.float64),
-                index=mfi_result.index
+        try:
+            mfi_result = ta.mfi(
+                df['high'], df['low'], df['close'], df['volume'],
+                length=self.indicators_config['mfi']['length']
             )
+            if mfi_result is not None and len(mfi_result) > 0:
+                mfi_col_name = f'mfi_{self.indicators_config["mfi"]["length"]}'
+                if isinstance(mfi_result, pd.DataFrame):
+                    mfi_series = mfi_result.iloc[:, 0]
+                else:
+                    mfi_series = mfi_result
+
+                features[mfi_col_name] = mfi_series.astype(np.float64)
+        except Exception as e:
+            features[f'mfi_{self.indicators_config["mfi"]["length"]}'] = np.nan
 
         return features
 
