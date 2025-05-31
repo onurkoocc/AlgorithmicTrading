@@ -246,38 +246,69 @@ class FeatureEngineService:
         for symbol in self.symbols:
             for interval in self.intervals:
                 try:
-                    max_rows = self.config.get('feature_engine.max_historical_rows', 3000)
-                    if interval in ['1m', '3m', '5m']:
-                        max_rows = min(max_rows, 3000)
-                    df = self.questdb.get_klines_df(symbol, interval, limit=max_rows)
+                    table_name = f"klines_{interval}"
+                    count_query = f"SELECT count() as cnt FROM {table_name} WHERE symbol = '{symbol}'"
+                    result = self.questdb.execute_query(count_query)
+                    total_klines = result[0]['cnt'] if result else 0
 
-                    if df.empty:
-                        continue
+                    self.logger.info(f"Processing {total_klines} klines for {symbol} {interval}")
 
-                    if df.index.tz is not None:
-                        df.index = df.index.tz_localize(None)
+                    chunk_size = 50000
+                    lookback_size = 200
+                    processed_timestamps = set()
 
-                    df = df[~df.index.duplicated(keep='first')]
+                    for offset in range(0, total_klines, chunk_size):
+                        real_offset = max(0, offset - lookback_size)
 
-                    batch_size = self.config.get('feature_engine.batch_size', 500)
-                    total_rows = len(df)
+                        query = f"""
+                            SELECT * FROM {table_name}
+                            WHERE symbol = '{symbol}'
+                            ORDER BY timestamp ASC
+                            LIMIT {chunk_size + lookback_size} OFFSET {real_offset}
+                        """
 
-                    for start_idx in range(0, total_rows, batch_size):
-                        end_idx = min(start_idx + batch_size, total_rows)
+                        result = self.questdb.execute_query(query)
+                        if not result:
+                            break
 
-                        lookback_start = max(0, start_idx - 200)
-                        batch_df = df.iloc[lookback_start:end_idx].copy()
+                        df = pd.DataFrame(result)
+                        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ns')
+                        df.set_index('timestamp', inplace=True)
+                        df.sort_index(inplace=True)
 
-                        features_df = self._calculate_all_features(batch_df, symbol, interval)
+                        if df.index.tz is not None:
+                            df.index = df.index.tz_localize(None)
 
-                        if not features_df.empty:
-                            features_to_store = features_df.iloc[-(end_idx - start_idx):].copy()
-                            self._store_features(symbol, interval, features_to_store)
+                        df = df[~df.index.duplicated(keep='first')]
 
-                        await asyncio.sleep(0.5)
+                        batch_size = self.config.get('feature_engine.batch_size', 500)
+                        start_processing_idx = lookback_size if offset > 0 else 0
 
-                    self.logger.info(f"Completed historical features for {symbol} {interval}")
-                    await asyncio.sleep(2)
+                        for start_idx in range(start_processing_idx, len(df), batch_size):
+                            end_idx = min(start_idx + batch_size, len(df))
+
+                            batch_lookback_start = max(0, start_idx - lookback_size)
+                            batch_df = df.iloc[batch_lookback_start:end_idx].copy()
+
+                            features_df = self._calculate_all_features(batch_df, symbol, interval)
+
+                            if not features_df.empty:
+                                features_to_store = features_df.iloc[-(end_idx - start_idx):].copy()
+
+                                new_features = features_to_store[~features_to_store.index.isin(processed_timestamps)]
+
+                                if not new_features.empty:
+                                    self._store_features(symbol, interval, new_features)
+                                    processed_timestamps.update(new_features.index)
+
+                            await asyncio.sleep(0.1)
+
+                        self.logger.info(
+                            f"Processed {len(processed_timestamps)} features for {symbol} {interval} (offset: {offset})")
+                        await asyncio.sleep(1)
+
+                    self.logger.info(
+                        f"Completed historical features for {symbol} {interval}: {len(processed_timestamps)} total features")
 
                 except Exception as e:
                     self.logger.error(f"Error calculating historical features for {symbol} {interval}: {e}")
