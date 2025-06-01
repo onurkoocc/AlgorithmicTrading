@@ -1,4 +1,3 @@
-# shared/connectors/questdb.py
 import socket
 import time
 from typing import Dict, List, Any, Optional, Tuple
@@ -28,6 +27,8 @@ class QuestDBConnector:
         self._socket = None
         self._session = self._create_session()
         self._connect()
+        self._connection_retry_count = 0
+        self._max_connection_retries = 5
 
     def _create_session(self):
         session = requests.Session()
@@ -65,13 +66,28 @@ class QuestDBConnector:
             self._socket.settimeout(30.0)
             self._socket.connect((self.host, self.port))
             self.logger.info(f"Connected to QuestDB at {self.host}:{self.port}")
+            self._connection_retry_count = 0
         except Exception as e:
             self.logger.error(f"Failed to connect to QuestDB: {e}")
+            self._connection_retry_count += 1
+            if self._connection_retry_count > self._max_connection_retries:
+                self._connection_retry_count = 0
+                time.sleep(10)
             raise
+
+    def _check_connection(self):
+        try:
+            self._socket.sendall(b'')
+            return True
+        except:
+            return False
 
     def _send_line(self, line: str, retry_count: int = 3):
         for attempt in range(retry_count):
             try:
+                if not self._check_connection():
+                    self._connect()
+
                 if not line.endswith('\n'):
                     line += '\n'
 
@@ -82,7 +98,10 @@ class QuestDBConnector:
                 if attempt < retry_count - 1:
                     self.logger.warning(f"Send failed (attempt {attempt + 1}/{retry_count}): {e}")
                     time.sleep(0.1 * (attempt + 1))
-                    self._connect()
+                    try:
+                        self._connect()
+                    except:
+                        time.sleep(1)
                 else:
                     self.logger.error(f"Failed to send data after {retry_count} attempts")
                     raise
@@ -164,8 +183,34 @@ class QuestDBConnector:
             self.logger.info(f"Written {total_written}/{len(data_list)} records for {symbol} {interval}")
             self.metrics.record_db_write(table_name, 'success')
 
+    def _handle_mmap_error(self, query: str, error_msg: str) -> bool:
+        if "could not mmap" in error_msg:
+            table_match = None
+            if "FROM " in query:
+                parts = query.split("FROM ")
+                if len(parts) > 1:
+                    table_part = parts[1].split()[0]
+                    table_match = table_part.strip()
+
+            if table_match:
+                self.logger.warning(f"Memory mapping error for table {table_match}, attempting to recover")
+                try:
+                    self.execute_query(f"VACUUM TABLE {table_match}", retry_count=1)
+                    time.sleep(2)
+                    return True
+                except:
+                    self.logger.error(f"Failed to recover table {table_match}")
+                    try:
+                        self.execute_query(f"REPAIR TABLE {table_match}", retry_count=1)
+                        time.sleep(2)
+                        return True
+                    except:
+                        pass
+        return False
+
     def execute_query(self, query: str, retry_count: int = 3) -> List[Dict[str, Any]]:
         last_exception = None
+        mmap_retry_done = False
 
         for attempt in range(retry_count):
             try:
@@ -186,8 +231,13 @@ class QuestDBConnector:
 
                     return [dict(zip(columns, row)) for row in rows]
                 else:
-                    error_msg = f"Query failed with status {response.status_code}: {response.text}"
-                    last_exception = Exception(error_msg)
+                    error_msg = response.text
+                    if "could not mmap" in error_msg and not mmap_retry_done:
+                        mmap_retry_done = True
+                        if self._handle_mmap_error(query, error_msg):
+                            continue
+
+                    last_exception = Exception(f"Query failed with status {response.status_code}: {error_msg}")
                     if attempt < retry_count - 1:
                         time.sleep(min(2 ** attempt, 10))
                         continue
@@ -431,3 +481,18 @@ class QuestDBConnector:
 
     def wait_for_commit(self, timeout: int = 5):
         time.sleep(timeout)
+
+    def repair_table(self, table_name: str) -> bool:
+        try:
+            self.logger.info(f"Attempting to repair table {table_name}")
+            self.execute_query(f"VACUUM TABLE {table_name}", retry_count=1)
+            time.sleep(3)
+            self.execute_query(f"REPAIR TABLE {table_name}", retry_count=1)
+            time.sleep(3)
+            test_query = f"SELECT count() FROM {table_name} LIMIT 1"
+            self.execute_query(test_query, retry_count=1)
+            self.logger.info(f"Table {table_name} repaired successfully")
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to repair table {table_name}: {e}")
+            return False

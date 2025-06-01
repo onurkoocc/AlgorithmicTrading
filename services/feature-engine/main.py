@@ -56,6 +56,7 @@ class FeatureEngineService:
         self.failed_tables = set()
         self.max_table_retries = 3
         self.table_retry_count = defaultdict(int)
+        self.problematic_intervals = set()
 
     def _init_connections(self, max_retries: int = 10, retry_delay: float = 3.0):
         for attempt in range(max_retries):
@@ -216,15 +217,14 @@ class FeatureEngineService:
 
                 self.logger.warning(f"Attempting to repair table {table_name}")
 
-                self.questdb.execute_query(f"VACUUM TABLE {table_name}")
-                await asyncio.sleep(2)
+                success = self.questdb.repair_table(table_name)
 
-                test_query = f"SELECT count() FROM {table_name} WHERE symbol = '{symbol}' LIMIT 1"
-                self.questdb.execute_query(test_query)
-
-                self.failed_tables.discard(table_name)
-                self.logger.info(f"Table {table_name} repair successful")
-                return True
+                if success:
+                    self.failed_tables.discard(table_name)
+                    self.table_retry_count[table_name] = 0
+                    return True
+                else:
+                    self.table_retry_count[table_name] += 1
 
         except Exception as e:
             self.logger.error(f"Failed to repair table {table_name}: {e}")
@@ -233,6 +233,9 @@ class FeatureEngineService:
             if self.table_retry_count[table_name] >= self.max_table_retries:
                 self.logger.error(
                     f"Table {table_name} marked as permanently failed after {self.max_table_retries} attempts")
+                interval = table_name.replace('features_', '').replace('klines_', '')
+                if interval in self.intervals:
+                    self.problematic_intervals.add(interval)
 
         return False
 
@@ -241,12 +244,19 @@ class FeatureEngineService:
 
         for symbol in self.symbols:
             for interval in self.intervals:
+                if interval in self.problematic_intervals:
+                    self.logger.warning(f"Skipping problematic interval {interval}")
+                    continue
+
                 try:
                     await self._process_symbol_interval(symbol, interval)
                     await asyncio.sleep(self.batch_delay)
                 except Exception as e:
                     self.logger.error(f"Error processing {symbol} {interval} during historical calculation: {e}",
                                       exc_info=True)
+                    if "could not mmap" in str(e):
+                        self.problematic_intervals.add(interval)
+                        self.logger.warning(f"Marking interval {interval} as problematic due to mmap errors")
 
     async def _process_symbol_interval(self, symbol: str, interval: str):
         table_name = f"klines_{interval}"
@@ -256,169 +266,184 @@ class FeatureEngineService:
             self.logger.warning(f"Skipping {symbol} {interval} - table {features_table} marked as failed")
             return
 
-        klines_query = f"""
-            SELECT min(timestamp) as min_ts, max(timestamp) as max_ts, count() as cnt
-            FROM {table_name}
-            WHERE symbol = '{symbol}'
-        """
-
-        klines_result = self.questdb.execute_query(klines_query)
-        if not klines_result or klines_result[0]['min_ts'] is None:
-            self.logger.warning(f"No klines data for {symbol} {interval}")
-            return
-
-        min_klines_ts_raw = klines_result[0]['min_ts']
-        max_klines_ts_raw = klines_result[0]['max_ts']
-        total_klines = klines_result[0]['cnt']
-
-        min_klines_ts = self._to_nanoseconds_epoch(min_klines_ts_raw)
-        max_klines_ts = self._to_nanoseconds_epoch(max_klines_ts_raw)
-
-        if min_klines_ts is None or max_klines_ts is None:
-            self.logger.error(
-                f"Could not parse kline timestamp range for {symbol} {interval}. MinRaw: {min_klines_ts_raw}, MaxRaw: {max_klines_ts_raw}")
-            return
-
-        self.logger.info(
-            f"Klines for {symbol} {interval}: {total_klines} records from {pd.Timestamp(min_klines_ts, unit='ns')} to {pd.Timestamp(max_klines_ts, unit='ns')}")
-
-        existing_features_query = f"""
-            SELECT count() as feature_count, max(timestamp) as max_ts 
-            FROM {features_table} 
-            WHERE symbol = '{symbol}'
-        """
-
-        existing_feature_count = 0
-        last_feature_ts = None
-
         try:
-            existing_result = self.questdb.execute_query(existing_features_query)
+            klines_query = f"""
+                SELECT min(timestamp) as min_ts, max(timestamp) as max_ts, count() as cnt
+                FROM {table_name}
+                WHERE symbol = '{symbol}'
+            """
 
-            if existing_result and existing_result[0]['feature_count'] > 0 and existing_result[0]['max_ts'] is not None:
-                existing_feature_count = existing_result[0]['feature_count']
-                last_feature_ts_raw = existing_result[0]['max_ts']
-                last_feature_ts = self._to_nanoseconds_epoch(last_feature_ts_raw)
+            klines_result = self.questdb.execute_query(klines_query)
+            if not klines_result or klines_result[0]['min_ts'] is None:
+                self.logger.warning(f"No klines data for {symbol} {interval}")
+                return
 
-                if last_feature_ts is not None:
-                    self.logger.info(
-                        f"Found {existing_feature_count} existing features for {symbol} {interval} up to {pd.Timestamp(last_feature_ts, unit='ns')}")
+            min_klines_ts_raw = klines_result[0]['min_ts']
+            max_klines_ts_raw = klines_result[0]['max_ts']
+            total_klines = klines_result[0]['cnt']
+
+            min_klines_ts = self._to_nanoseconds_epoch(min_klines_ts_raw)
+            max_klines_ts = self._to_nanoseconds_epoch(max_klines_ts_raw)
+
+            if min_klines_ts is None or max_klines_ts is None:
+                self.logger.error(
+                    f"Could not parse kline timestamp range for {symbol} {interval}. MinRaw: {min_klines_ts_raw}, MaxRaw: {max_klines_ts_raw}")
+                return
+
+            self.logger.info(
+                f"Klines for {symbol} {interval}: {total_klines} records from {pd.Timestamp(min_klines_ts, unit='ns')} to {pd.Timestamp(max_klines_ts, unit='ns')}")
+
+            existing_features_query = f"""
+                SELECT count() as feature_count, max(timestamp) as max_ts 
+                FROM {features_table} 
+                WHERE symbol = '{symbol}'
+            """
+
+            existing_feature_count = 0
+            last_feature_ts = None
+
+            try:
+                existing_result = self.questdb.execute_query(existing_features_query)
+
+                if existing_result and existing_result[0]['feature_count'] > 0 and existing_result[0][
+                    'max_ts'] is not None:
+                    existing_feature_count = existing_result[0]['feature_count']
+                    last_feature_ts_raw = existing_result[0]['max_ts']
+                    last_feature_ts = self._to_nanoseconds_epoch(last_feature_ts_raw)
+
+                    if last_feature_ts is not None:
+                        self.logger.info(
+                            f"Found {existing_feature_count} existing features for {symbol} {interval} up to {pd.Timestamp(last_feature_ts, unit='ns')}")
+                    else:
+                        self.logger.warning(
+                            f"Found {existing_feature_count} existing features for {symbol} {interval} but could not parse last feature timestamp: {last_feature_ts_raw}")
+                        existing_feature_count = 0
+
+            except Exception as e:
+                if "could not mmap" in str(e):
+                    self.failed_tables.add(features_table)
+                    self.logger.error(f"Memory mapping error for table {features_table}: {e}")
+
+                    if await self._repair_table_if_needed(features_table, symbol):
+                        await self._process_symbol_interval(symbol, interval)
+                    return
                 else:
-                    self.logger.warning(
-                        f"Found {existing_feature_count} existing features for {symbol} {interval} but could not parse last feature timestamp: {last_feature_ts_raw}")
-                    existing_feature_count = 0
+                    self.logger.error(f"Error checking existing features for {symbol} {interval}: {e}")
+                    return
+
+            interval_ns = self._get_interval_ms(interval) * 1_000_000
+
+            if last_feature_ts is not None and existing_feature_count > 0:
+                if last_feature_ts >= (max_klines_ts - interval_ns * 5):
+                    self.logger.info(
+                        f"Features considered up to date for {symbol} {interval}. Last feature at {pd.Timestamp(last_feature_ts, unit='ns')}, max kline at {pd.Timestamp(max_klines_ts, unit='ns')}")
+                    start_ts = last_feature_ts + interval_ns
+                    if start_ts > max_klines_ts:
+                        self.logger.info(f"No new klines to process for {symbol} {interval} since last feature.")
+                        return
+                else:
+                    start_ts = last_feature_ts + interval_ns
+                    self.logger.info(
+                        f"Resuming feature calculation for {symbol} {interval} from {pd.Timestamp(start_ts, unit='ns')}")
+            else:
+                self.logger.info(
+                    f"Calculating features from the beginning for {symbol} {interval} (Existing: {existing_feature_count}, LastTS: {pd.Timestamp(last_feature_ts, unit='ns') if last_feature_ts else 'N/A'})")
+                start_ts = min_klines_ts
+
+            if start_ts > max_klines_ts:
+                self.logger.info(
+                    f"Start timestamp {pd.Timestamp(start_ts, unit='ns')} is after max kline timestamp {pd.Timestamp(max_klines_ts, unit='ns')} for {symbol} {interval}. Nothing to process.")
+                return
+
+            self.logger.info(
+                f"Need to calculate features for {symbol} {interval} from {pd.Timestamp(start_ts, unit='ns')} to {pd.Timestamp(max_klines_ts, unit='ns')}")
+
+            chunk_size = 5000
+            lookback = 200
+            processed_count = 0
+            current_ts = start_ts
+
+            while current_ts <= max_klines_ts:
+                lookback_start_ts = max(min_klines_ts, current_ts - (lookback * interval_ns))
+                processing_chunk_end_ts = min(current_ts + (chunk_size * interval_ns), max_klines_ts + interval_ns)
+                fetch_end_ts = processing_chunk_end_ts
+
+                await asyncio.sleep(self.query_delay)
+
+                try:
+                    df = self.questdb.get_klines_by_timestamp_range(symbol, interval, lookback_start_ts, fetch_end_ts)
+
+                    if df.empty:
+                        self.logger.warning(
+                            f"Empty dataframe for {symbol} {interval} from {pd.Timestamp(lookback_start_ts, unit='ns')} to {pd.Timestamp(fetch_end_ts, unit='ns')}")
+                        current_ts = min(current_ts + (chunk_size * interval_ns), max_klines_ts + interval_ns)
+                        if current_ts > max_klines_ts:
+                            break
+                        continue
+
+                    self.logger.debug(
+                        f"Processing {len(df)} klines for {symbol} {interval} (fetched range: {pd.Timestamp(lookback_start_ts, unit='ns')} to {pd.Timestamp(fetch_end_ts, unit='ns')})")
+
+                    features_df = self._calculate_features(df, symbol, interval)
+
+                    if features_df.empty:
+                        self.logger.warning(
+                            f"Empty features calculated for {symbol} {interval} for klines in range {df.index.min()} to {df.index.max() if not df.empty else 'N/A'}")
+                        current_ts = min(current_ts + (chunk_size * interval_ns), max_klines_ts + interval_ns)
+                        if current_ts > max_klines_ts:
+                            break
+                        continue
+
+                    features_to_store = features_df[features_df.index >= pd.Timestamp(current_ts, unit='ns')]
+                    features_to_store = features_to_store[
+                        features_to_store.index <= pd.Timestamp(max_klines_ts, unit='ns')]
+
+                    if not features_to_store.empty:
+                        await self._store_features_batch(symbol, interval, features_to_store)
+                        processed_count += len(features_to_store)
+                        self.logger.debug(
+                            f"Stored {len(features_to_store)} features for {symbol} {interval}. Total processed in this run: {processed_count}")
+
+                        if processed_count > 0 and processed_count % 1000 == 0:
+                            self.logger.info(
+                                f"Processed {processed_count} features for {symbol} {interval} so far in this run.")
+                    else:
+                        self.logger.debug(
+                            f"No features to store for {symbol} {interval} for current_ts {pd.Timestamp(current_ts, unit='ns')}")
+
+                    if not features_to_store.empty:
+                        last_stored_ts_in_chunk = features_to_store.index.max().value
+                        current_ts = last_stored_ts_in_chunk + interval_ns
+                    else:
+                        current_ts = min(current_ts + (chunk_size * interval_ns), max_klines_ts + interval_ns)
+
+                    if current_ts > max_klines_ts:
+                        break
+
+                except Exception as e:
+                    if "could not mmap" in str(e):
+                        self.logger.error(f"Memory mapping error during chunk processing for {symbol} {interval}: {e}")
+                        self.problematic_intervals.add(interval)
+                        return
+
+                    self.logger.error(
+                        f"Error processing chunk for {symbol} {interval} starting {pd.Timestamp(current_ts, unit='ns')}: {e}",
+                        exc_info=True)
+                    await asyncio.sleep(5)
+                    current_ts = min(current_ts + interval_ns, max_klines_ts + interval_ns)
+                    if current_ts > max_klines_ts:
+                        break
+                    continue
+
+            self.logger.info(
+                f"Completed historical features for {symbol} {interval}: {processed_count} features processed in this run.")
 
         except Exception as e:
             if "could not mmap" in str(e):
-                self.failed_tables.add(features_table)
-                self.logger.error(f"Memory mapping error for table {features_table}: {e}")
-
-                if await self._repair_table_if_needed(features_table, symbol):
-                    await self._process_symbol_interval(symbol, interval)
-                return
+                self.logger.error(f"Memory mapping error for {symbol} {interval}: {e}")
+                self.problematic_intervals.add(interval)
             else:
-                self.logger.error(f"Error checking existing features for {symbol} {interval}: {e}")
-                return
-
-        interval_ns = self._get_interval_ms(interval) * 1_000_000
-
-        if last_feature_ts is not None and existing_feature_count > 0:
-            if last_feature_ts >= (max_klines_ts - interval_ns * 5):
-                self.logger.info(
-                    f"Features considered up to date for {symbol} {interval}. Last feature at {pd.Timestamp(last_feature_ts, unit='ns')}, max kline at {pd.Timestamp(max_klines_ts, unit='ns')}")
-                start_ts = last_feature_ts + interval_ns
-                if start_ts > max_klines_ts:
-                    self.logger.info(f"No new klines to process for {symbol} {interval} since last feature.")
-                    return
-            else:
-                start_ts = last_feature_ts + interval_ns
-                self.logger.info(
-                    f"Resuming feature calculation for {symbol} {interval} from {pd.Timestamp(start_ts, unit='ns')}")
-        else:
-            self.logger.info(
-                f"Calculating features from the beginning for {symbol} {interval} (Existing: {existing_feature_count}, LastTS: {pd.Timestamp(last_feature_ts, unit='ns') if last_feature_ts else 'N/A'})")
-            start_ts = min_klines_ts
-
-        if start_ts > max_klines_ts:
-            self.logger.info(
-                f"Start timestamp {pd.Timestamp(start_ts, unit='ns')} is after max kline timestamp {pd.Timestamp(max_klines_ts, unit='ns')} for {symbol} {interval}. Nothing to process.")
-            return
-
-        self.logger.info(
-            f"Need to calculate features for {symbol} {interval} from {pd.Timestamp(start_ts, unit='ns')} to {pd.Timestamp(max_klines_ts, unit='ns')}")
-
-        chunk_size = 5000
-        lookback = 200
-        processed_count = 0
-        current_ts = start_ts
-
-        while current_ts <= max_klines_ts:
-            lookback_start_ts = max(min_klines_ts, current_ts - (lookback * interval_ns))
-            processing_chunk_end_ts = min(current_ts + (chunk_size * interval_ns), max_klines_ts + interval_ns)
-            fetch_end_ts = processing_chunk_end_ts
-
-            await asyncio.sleep(self.query_delay)
-
-            try:
-                df = self.questdb.get_klines_by_timestamp_range(symbol, interval, lookback_start_ts, fetch_end_ts)
-
-                if df.empty:
-                    self.logger.warning(
-                        f"Empty dataframe for {symbol} {interval} from {pd.Timestamp(lookback_start_ts, unit='ns')} to {pd.Timestamp(fetch_end_ts, unit='ns')}")
-                    current_ts = min(current_ts + (chunk_size * interval_ns), max_klines_ts + interval_ns)
-                    if current_ts > max_klines_ts:
-                        break
-                    continue
-
-                self.logger.debug(
-                    f"Processing {len(df)} klines for {symbol} {interval} (fetched range: {pd.Timestamp(lookback_start_ts, unit='ns')} to {pd.Timestamp(fetch_end_ts, unit='ns')})")
-
-                features_df = self._calculate_features(df, symbol, interval)
-
-                if features_df.empty:
-                    self.logger.warning(
-                        f"Empty features calculated for {symbol} {interval} for klines in range {df.index.min()} to {df.index.max() if not df.empty else 'N/A'}")
-                    current_ts = min(current_ts + (chunk_size * interval_ns), max_klines_ts + interval_ns)
-                    if current_ts > max_klines_ts:
-                        break
-                    continue
-
-                features_to_store = features_df[features_df.index >= pd.Timestamp(current_ts, unit='ns')]
-                features_to_store = features_to_store[features_to_store.index <= pd.Timestamp(max_klines_ts, unit='ns')]
-
-                if not features_to_store.empty:
-                    await self._store_features_batch(symbol, interval, features_to_store)
-                    processed_count += len(features_to_store)
-                    self.logger.debug(
-                        f"Stored {len(features_to_store)} features for {symbol} {interval}. Total processed in this run: {processed_count}")
-
-                    if processed_count > 0 and processed_count % 1000 == 0:
-                        self.logger.info(
-                            f"Processed {processed_count} features for {symbol} {interval} so far in this run.")
-                else:
-                    self.logger.debug(
-                        f"No features to store for {symbol} {interval} for current_ts {pd.Timestamp(current_ts, unit='ns')}")
-
-                if not features_to_store.empty:
-                    last_stored_ts_in_chunk = features_to_store.index.max().value
-                    current_ts = last_stored_ts_in_chunk + interval_ns
-                else:
-                    current_ts = min(current_ts + (chunk_size * interval_ns), max_klines_ts + interval_ns)
-
-                if current_ts > max_klines_ts:
-                    break
-
-            except Exception as e:
-                self.logger.error(
-                    f"Error processing chunk for {symbol} {interval} starting {pd.Timestamp(current_ts, unit='ns')}: {e}",
-                    exc_info=True)
-                await asyncio.sleep(5)
-                current_ts = min(current_ts + interval_ns, max_klines_ts + interval_ns)
-                if current_ts > max_klines_ts:
-                    break
-                continue
-
-        self.logger.info(
-            f"Completed historical features for {symbol} {interval}: {processed_count} features processed in this run.")
+                raise
 
     def _calculate_features(self, df: pd.DataFrame, symbol: str, interval: str) -> pd.DataFrame:
         if df.empty or len(df) < 20:
@@ -540,7 +565,12 @@ class FeatureEngineService:
             self.logger.error("Redis not initialized. Cannot process realtime updates.")
             return
 
-        channels = [f"kline:{symbol}:{interval}" for symbol in self.symbols for interval in self.intervals]
+        channels = []
+        for symbol in self.symbols:
+            for interval in self.intervals:
+                if interval not in self.problematic_intervals:
+                    channels.append(f"kline:{symbol}:{interval}")
+
         if not channels:
             self.logger.warning("No channels to subscribe for realtime updates.")
             return
@@ -580,6 +610,9 @@ class FeatureEngineService:
                 return
 
             _, symbol, interval = channel.split(':')
+
+            if interval in self.problematic_intervals:
+                return
 
             kline_timestamp_ms = int(kline_update['timestamp'] * 1000)
             kline_timestamp_ns = kline_timestamp_ms * 1_000_000
@@ -628,7 +661,12 @@ class FeatureEngineService:
         except json.JSONDecodeError as e:
             self.logger.error(f"Failed to decode JSON from kline update: {data}, Error: {e}")
         except Exception as e:
-            self.logger.error(f"Error processing kline update for {channel}: {e}", exc_info=True)
+            if "could not mmap" in str(e):
+                self.logger.error(f"Memory mapping error during realtime processing: {e}")
+                interval = channel.split(':')[2]
+                self.problematic_intervals.add(interval)
+            else:
+                self.logger.error(f"Error processing kline update for {channel}: {e}", exc_info=True)
 
     async def flush_buffer(self):
         if not self.feature_buffer:
@@ -671,6 +709,9 @@ class FeatureEngineService:
             try:
                 for symbol in self.symbols:
                     for interval in ['1h', '1d']:
+                        if interval in self.problematic_intervals:
+                            continue
+
                         try:
                             features_table = f"features_{interval}"
                             if features_table in self.failed_tables and self.table_retry_count[
@@ -726,6 +767,10 @@ class FeatureEngineService:
             self.tasks.append(asyncio.create_task(self.periodic_flush()))
             self.tasks.append(asyncio.create_task(self.quality_monitoring()))
             self.logger.info("Feature engine service started with all tasks.")
+
+            if self.problematic_intervals:
+                self.logger.warning(f"Problematic intervals detected: {self.problematic_intervals}")
+                self.logger.warning("These intervals will be skipped in realtime processing")
         else:
             self.logger.error(
                 "Feature engine service started but data initialization failed. Realtime processing might be impacted.")
