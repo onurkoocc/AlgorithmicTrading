@@ -193,54 +193,85 @@ class FeatureEngineService:
 
     async def _process_symbol_interval(self, symbol: str, interval: str):
         table_name = f"klines_{interval}"
+        features_table = f"features_{interval}"
+
+        existing_features_query = f"""
+            SELECT max(timestamp) as max_ts 
+            FROM {features_table} 
+            WHERE symbol = '{symbol}'
+        """
+
+        existing_result = self.questdb.execute_query(existing_features_query)
+        last_feature_ts = None
+
+        if existing_result and existing_result[0]['max_ts'] is not None:
+            last_feature_ts = existing_result[0]['max_ts']
+            if isinstance(last_feature_ts, str):
+                last_feature_ts = int(pd.Timestamp(last_feature_ts).timestamp() * 1_000_000_000)
+            else:
+                last_feature_ts = int(last_feature_ts)
+            self.logger.info(
+                f"Found existing features for {symbol} {interval} up to {pd.Timestamp(last_feature_ts, unit='ns')}")
 
         min_ts, max_ts = self.questdb.get_timestamp_range(symbol, interval)
         if min_ts is None or max_ts is None:
             self.logger.warning(f"No data for {symbol} {interval}")
             return
 
-        chunk_size = 10000
+        if last_feature_ts:
+            min_ts = last_feature_ts + 1
+
+        if min_ts >= max_ts:
+            self.logger.info(f"Features already up to date for {symbol} {interval}")
+            return
+
+        chunk_size = 5000
         lookback = 200
         interval_ms = self._get_interval_ms(interval)
-
-        current_ts = min_ts
         processed_count = 0
 
+        current_ts = min_ts
+
         while current_ts < max_ts:
-            start_ts = max(min_ts, current_ts - (lookback * interval_ms * 1_000_000))
-            end_ts = min(max_ts, current_ts + (chunk_size * interval_ms * 1_000_000))
+            lookback_start_ts = max(min_ts - (lookback * interval_ms * 1_000_000), 0)
+            chunk_end_ts = min(current_ts + (chunk_size * interval_ms * 1_000_000), max_ts)
 
             await asyncio.sleep(self.query_delay)
 
             try:
                 df = self.questdb.get_klines_by_timestamp_range(
-                    symbol, interval, start_ts, end_ts
+                    symbol, interval, lookback_start_ts, chunk_end_ts
                 )
 
                 if df.empty:
-                    current_ts = end_ts
+                    current_ts = chunk_end_ts
                     continue
 
                 features_df = self._calculate_features(df, symbol, interval)
 
-                chunk_features = features_df[
-                    (features_df.index >= pd.Timestamp(current_ts, unit='ns')) &
-                    (features_df.index < pd.Timestamp(end_ts, unit='ns'))
-                    ]
+                if features_df.empty:
+                    current_ts = chunk_end_ts
+                    continue
 
-                if not chunk_features.empty:
-                    await self._store_features_batch(symbol, interval, chunk_features)
-                    processed_count += len(chunk_features)
+                features_to_store = features_df[features_df.index >= pd.Timestamp(current_ts, unit='ns')]
+
+                if not features_to_store.empty:
+                    await self._store_features_batch(symbol, interval, features_to_store)
+                    processed_count += len(features_to_store)
 
                     if processed_count % 1000 == 0:
                         self.logger.info(f"Processed {processed_count} features for {symbol} {interval}")
 
-                current_ts = end_ts
+                current_ts = chunk_end_ts
 
             except Exception as e:
                 self.logger.error(f"Error processing chunk for {symbol} {interval}: {e}")
+                import traceback
+                traceback.print_exc()
                 await asyncio.sleep(5)
                 continue
+
+        self.logger.info(f"Completed historical features for {symbol} {interval}: {processed_count} features processed")
 
     def _calculate_features(self, df: pd.DataFrame, symbol: str, interval: str) -> pd.DataFrame:
         if df.empty or len(df) < 20:
@@ -287,12 +318,16 @@ class FeatureEngineService:
 
         table_name = f"features_{interval}"
 
-        if features_df.index.name != 'timestamp':
-            features_df = features_df.reset_index(names=['timestamp'])
-        else:
+        features_df = features_df.copy()
+
+        if features_df.index.name == 'timestamp':
             features_df = features_df.reset_index()
+        else:
+            features_df['timestamp'] = features_df.index
+            features_df = features_df.reset_index(drop=True)
 
         records = features_df.to_dict('records')
+        stored_count = 0
 
         for record in records:
             timestamp_val = record.get('timestamp')
@@ -301,6 +336,8 @@ class FeatureEngineService:
 
             if isinstance(timestamp_val, pd.Timestamp):
                 timestamp_ns = int(timestamp_val.timestamp() * 1_000_000_000)
+            elif isinstance(timestamp_val, (int, float)):
+                timestamp_ns = int(timestamp_val)
             else:
                 timestamp_ns = int(pd.Timestamp(timestamp_val).timestamp() * 1_000_000_000)
 
@@ -322,8 +359,12 @@ class FeatureEngineService:
             if numeric_fields:
                 line = f"{table_name},symbol={symbol} {','.join(numeric_fields)} {timestamp_ns}"
                 self.questdb._send_line(line)
+                stored_count += 1
 
-        self.metrics.record_db_write(table_name, 'success')
+        if stored_count > 0:
+            self.questdb.wait_for_commit(2)
+            self.logger.debug(f"Stored {stored_count} features for {symbol} {interval}")
+            self.metrics.record_db_write(table_name, 'success')
 
     async def process_realtime_updates(self):
         channels = [f"kline:{symbol}:{interval}" for symbol in self.symbols for interval in self.intervals]
@@ -442,7 +483,7 @@ class FeatureEngineService:
             '2h': 7200000,
             '4h': 14400000,
             '6h': 21600000,
-            '8h': 21600000,
+            '8h': 28800000,
             '12h': 43200000,
             '1d': 86400000
         }
