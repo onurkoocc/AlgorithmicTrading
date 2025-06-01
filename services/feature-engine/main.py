@@ -50,6 +50,9 @@ class FeatureEngineService:
         self.data_initialized = False
         self.last_processed = defaultdict(lambda: defaultdict(int))
 
+        self.query_delay = 0.5
+        self.batch_delay = 2.0
+
     def _init_connections(self, max_retries: int = 10, retry_delay: float = 3.0):
         for attempt in range(max_retries):
             try:
@@ -184,6 +187,7 @@ class FeatureEngineService:
             for interval in self.intervals:
                 try:
                     await self._process_symbol_interval(symbol, interval)
+                    await asyncio.sleep(self.batch_delay)
                 except Exception as e:
                     self.logger.error(f"Error processing {symbol} {interval}: {e}")
 
@@ -195,36 +199,48 @@ class FeatureEngineService:
             self.logger.warning(f"No data for {symbol} {interval}")
             return
 
-        chunk_size = 50000
+        chunk_size = 10000
         lookback = 200
         interval_ms = self._get_interval_ms(interval)
 
         current_ts = min_ts
+        processed_count = 0
 
         while current_ts < max_ts:
-            start_ts = max(min_ts, current_ts - (lookback * interval_ms))
-            end_ts = min(max_ts, current_ts + (chunk_size * interval_ms))
+            start_ts = max(min_ts, current_ts - (lookback * interval_ms * 1_000_000))
+            end_ts = min(max_ts, current_ts + (chunk_size * interval_ms * 1_000_000))
 
-            df = self.questdb.get_klines_by_timestamp_range(
-                symbol, interval, start_ts, end_ts
-            )
+            await asyncio.sleep(self.query_delay)
 
-            if df.empty:
+            try:
+                df = self.questdb.get_klines_by_timestamp_range(
+                    symbol, interval, start_ts, end_ts
+                )
+
+                if df.empty:
+                    current_ts = end_ts
+                    continue
+
+                features_df = self._calculate_features(df, symbol, interval)
+
+                chunk_features = features_df[
+                    (features_df.index >= pd.Timestamp(current_ts, unit='ns')) &
+                    (features_df.index < pd.Timestamp(end_ts, unit='ns'))
+                    ]
+
+                if not chunk_features.empty:
+                    await self._store_features_batch(symbol, interval, chunk_features)
+                    processed_count += len(chunk_features)
+
+                    if processed_count % 1000 == 0:
+                        self.logger.info(f"Processed {processed_count} features for {symbol} {interval}")
+
                 current_ts = end_ts
+
+            except Exception as e:
+                self.logger.error(f"Error processing chunk for {symbol} {interval}: {e}")
+                await asyncio.sleep(5)
                 continue
-
-            features_df = self._calculate_features(df, symbol, interval)
-
-            chunk_features = features_df[
-                (features_df.index >= pd.Timestamp(current_ts, unit='ns')) &
-                (features_df.index < pd.Timestamp(end_ts, unit='ns'))
-                ]
-
-            if not chunk_features.empty:
-                await self._store_features_batch(symbol, interval, chunk_features)
-
-            current_ts = end_ts
-            await asyncio.sleep(0.1)
 
     def _calculate_features(self, df: pd.DataFrame, symbol: str, interval: str) -> pd.DataFrame:
         if df.empty or len(df) < 20:
@@ -257,7 +273,7 @@ class FeatureEngineService:
             self.logger.warning(f"Microstructure features error: {e}")
 
         features['symbol'] = symbol
-        features['feature_version'] = 1
+        features['feature_version'] = 2
 
         features = features.replace([np.inf, -np.inf], np.nan)
         features = features.dropna(how='all',
@@ -426,7 +442,7 @@ class FeatureEngineService:
             '2h': 7200000,
             '4h': 14400000,
             '6h': 21600000,
-            '8h': 28800000,
+            '8h': 21600000,
             '12h': 43200000,
             '1d': 86400000
         }

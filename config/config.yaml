@@ -3,6 +3,10 @@ database:
     host: questdb
     port: 9009
     http_port: 9000
+    connection_pool_size: 10
+    max_retries: 3
+    retry_backoff: 1.0
+    request_timeout: 30
 
 redis:
   host: redis

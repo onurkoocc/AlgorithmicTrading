@@ -9,6 +9,8 @@ from ..utils.metrics import MetricsCollector
 import pandas as pd
 from datetime import datetime
 import struct
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 
 class QuestDBConnector:
@@ -23,7 +25,30 @@ class QuestDBConnector:
 
         self.http_base_url = f"http://{self.host}:{self.http_port}"
         self._socket = None
+        self._session = self._create_session()
         self._connect()
+
+    def _create_session(self):
+        session = requests.Session()
+
+        retry_strategy = Retry(
+            total=3,
+            backoff_factor=1,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET", "POST"]
+        )
+
+        adapter = HTTPAdapter(
+            max_retries=retry_strategy,
+            pool_connections=10,
+            pool_maxsize=10,
+            pool_block=False
+        )
+
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+
+        return session
 
     def _connect(self):
         try:
@@ -139,9 +164,11 @@ class QuestDBConnector:
             self.metrics.record_db_write(table_name, 'success')
 
     def execute_query(self, query: str, retry_count: int = 3) -> List[Dict[str, Any]]:
+        last_exception = None
+
         for attempt in range(retry_count):
             try:
-                response = requests.get(
+                response = self._session.get(
                     f"{self.http_base_url}/exec",
                     params={'query': query},
                     timeout=30
@@ -159,18 +186,28 @@ class QuestDBConnector:
                     return [dict(zip(columns, row)) for row in rows]
                 else:
                     error_msg = f"Query failed with status {response.status_code}: {response.text}"
+                    last_exception = Exception(error_msg)
                     if attempt < retry_count - 1:
-                        time.sleep(2 ** attempt)
+                        time.sleep(min(2 ** attempt, 10))
                         continue
-                    raise Exception(error_msg)
+
+            except requests.exceptions.ConnectionError as e:
+                last_exception = e
+                if attempt < retry_count - 1:
+                    self.logger.warning(f"Connection error (attempt {attempt + 1}/{retry_count}): {e}")
+                    time.sleep(min(2 ** attempt, 10))
+                    continue
 
             except Exception as e:
+                last_exception = e
                 if attempt < retry_count - 1:
                     self.logger.warning(f"Query failed (attempt {attempt + 1}/{retry_count}): {e}")
-                    time.sleep(2 ** attempt)
+                    time.sleep(min(2 ** attempt, 10))
                 else:
                     self.logger.error(f"Query execution failed after {retry_count} attempts: {e}")
-                    raise
+
+        if last_exception:
+            raise last_exception
 
     def get_latest_timestamp(self, symbol: str, interval: str) -> Optional[int]:
         table_name = f"klines_{interval}"
@@ -185,7 +222,6 @@ class QuestDBConnector:
             if result and result[0]['timestamp'] is not None:
                 timestamp = result[0]['timestamp']
 
-                # Handle both integer and ISO string timestamps
                 if isinstance(timestamp, str):
                     return int(pd.Timestamp(timestamp).timestamp() * 1000)
                 else:
@@ -208,7 +244,6 @@ class QuestDBConnector:
                 min_ts = result[0]['min_ts']
                 max_ts = result[0]['max_ts']
 
-                # Handle both integer and ISO string timestamps
                 if isinstance(min_ts, str):
                     min_ts = int(pd.Timestamp(min_ts).timestamp() * 1_000_000_000)
                     max_ts = int(pd.Timestamp(max_ts).timestamp() * 1_000_000_000)
@@ -362,6 +397,12 @@ class QuestDBConnector:
             try:
                 self._socket.close()
                 self.logger.info("Closed QuestDB connection")
+            except:
+                pass
+
+        if self._session:
+            try:
+                self._session.close()
             except:
                 pass
 

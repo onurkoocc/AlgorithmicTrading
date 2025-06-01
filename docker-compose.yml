@@ -20,6 +20,12 @@ services:
       - QDB_CAIRO_SQL_COPY_BUFFER_SIZE=8M
       - QDB_CAIRO_WRITER_DATA_APPEND_PAGE_SIZE=16M
       - QDB_HTTP_MIN_ENABLED=false
+      - QDB_HTTP_CONNECTION_POOL_INITIAL_CAPACITY=128
+      - QDB_HTTP_CONNECTION_POOL_INITIAL_CAPACITY=256
+      - QDB_HTTP_CONNECTION_STRING_POOL_CAPACITY=256
+      - QDB_HTTP_MULTIPART_HEADER_BUFFER_SIZE=512
+      - QDB_HTTP_REQ_HEADER_BUFFER_SIZE=64k
+      - QDB_HTTP_WORKER_COUNT=8
     networks:
       - algo-net
     healthcheck:
@@ -33,6 +39,11 @@ services:
         limits:
           memory: 24G
           cpus: '10'
+    sysctls:
+      - net.ipv4.tcp_keepalive_time=120
+      - net.ipv4.tcp_keepalive_intvl=30
+      - net.ipv4.tcp_keepalive_probes=8
+      - net.core.somaxconn=4096
 
   redis:
     image: redis:7-alpine
@@ -42,7 +53,7 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
-    command: redis-server --appendonly yes --maxmemory 4gb --maxmemory-policy allkeys-lru
+    command: redis-server --appendonly yes --maxmemory 4gb --maxmemory-policy allkeys-lru --tcp-backlog 511 --timeout 0 --tcp-keepalive 300
     networks:
       - algo-net
     healthcheck:
@@ -86,6 +97,10 @@ services:
         limits:
           memory: 2G
           cpus: '2'
+    sysctls:
+      - net.ipv4.tcp_keepalive_time=120
+      - net.ipv4.tcp_keepalive_intvl=30
+      - net.ipv4.tcp_keepalive_probes=8
 
   feature-engine:
     build:
@@ -114,6 +129,12 @@ services:
         limits:
           memory: 12G
           cpus: '12'
+    sysctls:
+      - net.ipv4.tcp_keepalive_time=120
+      - net.ipv4.tcp_keepalive_intvl=30
+      - net.ipv4.tcp_keepalive_probes=8
+      - net.ipv4.ip_local_port_range=15000 65000
+      - net.core.somaxconn=4096
 
   prometheus:
     image: prom/prometheus:latest
