@@ -1,3 +1,4 @@
+# shared/connectors/questdb.py
 import socket
 import time
 from typing import Dict, List, Any, Optional, Tuple
@@ -225,7 +226,7 @@ class QuestDBConnector:
                 if isinstance(timestamp, str):
                     return int(pd.Timestamp(timestamp).timestamp() * 1000)
                 else:
-                    return int(timestamp / 1000)
+                    return int(timestamp / 1_000_000)
         except Exception as e:
             self.logger.warning(f"Failed to get latest timestamp for {symbol} {interval}: {e}")
         return None
@@ -284,6 +285,10 @@ class QuestDBConnector:
             except Exception as e:
                 self.logger.error(f"Failed to create table {table_name}: {e}")
 
+    def _format_timestamp_for_query(self, timestamp_ns: int) -> str:
+        timestamp_us = timestamp_ns // 1000
+        return f"'{pd.Timestamp(timestamp_us, unit='us').strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3]}Z'"
+
     def get_klines_df(self, symbol: str, interval: str,
                       start_time: Optional[int] = None,
                       end_time: Optional[int] = None,
@@ -313,7 +318,7 @@ class QuestDBConnector:
                 return pd.DataFrame()
 
             df = pd.DataFrame(result)
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ns')
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
             df.set_index('timestamp', inplace=True)
             df.sort_index(inplace=True)
 
@@ -327,11 +332,14 @@ class QuestDBConnector:
                                       limit: Optional[int] = None) -> pd.DataFrame:
         table_name = f"klines_{interval}"
 
+        start_timestamp_str = self._format_timestamp_for_query(start_ts)
+        end_timestamp_str = self._format_timestamp_for_query(end_ts)
+
         query = f"""
             SELECT * FROM {table_name}
             WHERE symbol = '{symbol}'
-            AND timestamp >= {start_ts}
-            AND timestamp < {end_ts}
+            AND timestamp >= {start_timestamp_str}
+            AND timestamp < {end_timestamp_str}
             ORDER BY timestamp ASC
         """
 
@@ -345,7 +353,7 @@ class QuestDBConnector:
                 return pd.DataFrame()
 
             df = pd.DataFrame(result)
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ns')
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
             df.set_index('timestamp', inplace=True)
             df.sort_index(inplace=True)
 
@@ -383,7 +391,7 @@ class QuestDBConnector:
                 return pd.DataFrame()
 
             df = pd.DataFrame(result)
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ns')
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
             df.set_index('timestamp', inplace=True)
             df.sort_index(inplace=True)
 

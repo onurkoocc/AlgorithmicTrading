@@ -1,3 +1,4 @@
+# services/feature-engine/indicators/custom.py
 import pandas as pd
 import numpy as np
 import talib
@@ -100,11 +101,12 @@ class CustomIndicatorCalculator:
             )
 
         if 'taker_buy_volume' in df.columns:
-            features['buy_pressure'] = np.where(
-                volume > 0,
-                df['taker_buy_volume'].values / volume,
-                np.nan
-            )
+            with np.errstate(divide='ignore', invalid='ignore'):
+                features['buy_pressure'] = np.where(
+                    volume > 0,
+                    df['taker_buy_volume'].values / volume,
+                    np.nan
+                )
 
             if len(df) >= 20:
                 buy_pressure_ma = talib.SMA(features['buy_pressure'].values, timeperiod=20)

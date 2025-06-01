@@ -1,3 +1,4 @@
+# services/feature-engine/indicators/microstructure.py
 import pandas as pd
 import numpy as np
 import talib
@@ -65,11 +66,12 @@ class MicrostructureCalculator:
             returns = np.abs(talib.ROC(close_prices, timeperiod=1) / 100.0)
             dollar_volume = close_prices * volume
 
-            amihud = np.where(
-                dollar_volume > 0,
-                returns / dollar_volume,
-                np.nan
-            )
+            with np.errstate(divide='ignore', invalid='ignore'):
+                amihud = np.where(
+                    dollar_volume > 0,
+                    returns / dollar_volume,
+                    np.nan
+                )
             features['amihud_illiquidity'] = talib.SMA(amihud, timeperiod=20)
 
             volume_bar = talib.SMA(volume, timeperiod=20)
@@ -79,11 +81,12 @@ class MicrostructureCalculator:
                 np.nan
             )
 
-            features['price_impact'] = np.where(
-                volume_ratio > 0,
-                returns / volume_ratio,
-                np.nan
-            )
+            with np.errstate(divide='ignore', invalid='ignore'):
+                features['price_impact'] = np.where(
+                    volume_ratio > 0,
+                    returns / volume_ratio,
+                    np.nan
+                )
 
         return features
 
