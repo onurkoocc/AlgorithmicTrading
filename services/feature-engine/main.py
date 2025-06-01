@@ -4,11 +4,9 @@ import sys
 import time
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
-import threading
 from collections import defaultdict
 import pandas as pd
 import numpy as np
-import pytz
 
 from shared.utils.config import Config
 from shared.utils.logging import setup_logger
@@ -50,12 +48,11 @@ class FeatureEngineService:
         self.is_running = False
         self.tasks = []
         self.data_initialized = False
+        self.last_processed = defaultdict(lambda: defaultdict(int))
 
     def _init_connections(self, max_retries: int = 10, retry_delay: float = 3.0):
         for attempt in range(max_retries):
             try:
-                self.logger.info(f"Initializing connections (attempt {attempt + 1}/{max_retries})...")
-
                 if not self.questdb:
                     self.questdb = QuestDBConnector()
                     self.logger.info("QuestDB connected")
@@ -72,40 +69,28 @@ class FeatureEngineService:
             except Exception as e:
                 self.logger.warning(f"Connection attempt {attempt + 1} failed: {e}")
                 if attempt < max_retries - 1:
-                    self.logger.info(f"Retrying in {retry_delay} seconds...")
                     time.sleep(retry_delay)
                 else:
-                    self.logger.error("Failed to initialize connections after all retries")
                     return False
 
         return False
 
     async def wait_for_data_initialization(self):
-        self.logger.info("Waiting for data initialization to complete...")
-
-        init_status = self.redis.get_json('data_initialization_status')
-        if init_status and init_status.get('status') == 'completed':
-            self.logger.info("Data already initialized, proceeding with feature calculation")
-            return
-
-        init_channel = self.redis.client.pubsub()
-        init_channel.subscribe('data_initialization')
+        self.logger.info("Waiting for data initialization...")
 
         timeout = 300
         start_time = time.time()
 
         while time.time() - start_time < timeout:
-            message = init_channel.get_message(timeout=1.0)
-            if message and message['type'] == 'message':
-                if message['data'].decode('utf-8') == 'completed':
-                    self.logger.info("Received data initialization completion signal")
-                    init_channel.close()
-                    return
+            init_status = self.redis.get_json('data_initialization_status')
+            if init_status and init_status.get('status') == 'completed':
+                self.logger.info("Data initialization completed")
+                return True
 
-            await asyncio.sleep(1)
+            await asyncio.sleep(5)
 
-        init_channel.close()
-        self.logger.warning("Data initialization timeout, proceeding anyway")
+        self.logger.error("Data initialization timeout")
+        return False
 
     async def initialize(self):
         self.logger.info("Initializing feature engine service")
@@ -113,10 +98,10 @@ class FeatureEngineService:
         if not self._init_connections():
             raise Exception("Failed to initialize database connections")
 
-        await self.wait_for_data_initialization()
+        if not await self.wait_for_data_initialization():
+            raise Exception("Data initialization failed")
 
         self._create_feature_tables()
-
         await self._calculate_historical_features()
 
         self.data_initialized = True
@@ -125,192 +110,310 @@ class FeatureEngineService:
         for interval in self.intervals:
             table_name = f"features_{interval}"
 
-            drop_query = f"DROP TABLE IF EXISTS {table_name}"
-            try:
-                self.questdb.execute_query(drop_query)
-                self.logger.info(f"Dropped existing table {table_name}")
-            except:
-                pass
+            columns = [
+                "symbol SYMBOL capacity 256 CACHE",
+                "open DOUBLE",
+                "high DOUBLE",
+                "low DOUBLE",
+                "close DOUBLE",
+                "volume DOUBLE"
+            ]
+
+            for period in [10, 20, 50, 100, 200]:
+                columns.extend([
+                    f"sma_{period} DOUBLE",
+                    f"ema_{period} DOUBLE"
+                ])
+
+            columns.extend([
+                "rsi_14 DOUBLE",
+                "rsi_21 DOUBLE",
+                "macd DOUBLE",
+                "macd_signal DOUBLE",
+                "macd_hist DOUBLE",
+                "bb_upper DOUBLE",
+                "bb_middle DOUBLE",
+                "bb_lower DOUBLE",
+                "bb_width DOUBLE",
+                "bb_percent DOUBLE",
+                "atr_14 DOUBLE",
+                "atr_21 DOUBLE",
+                "adx_14 DOUBLE",
+                "plus_di DOUBLE",
+                "minus_di DOUBLE",
+                "cci_20 DOUBLE",
+                "stoch_k DOUBLE",
+                "stoch_d DOUBLE",
+                "williams_r DOUBLE",
+                "mfi_14 DOUBLE",
+                "obv DOUBLE",
+                "vwap DOUBLE",
+                "volume_ratio DOUBLE",
+                "volatility_20 DOUBLE",
+                "volatility_50 DOUBLE",
+                "price_position DOUBLE",
+                "trend_strength DOUBLE",
+                "momentum_score DOUBLE",
+                "volume_momentum DOUBLE",
+                "buy_pressure DOUBLE",
+                "order_flow_imbalance DOUBLE",
+                "spread_ratio DOUBLE",
+                "price_impact DOUBLE",
+                "kyle_lambda DOUBLE",
+                "realized_volatility DOUBLE",
+                "feature_version LONG",
+                "timestamp TIMESTAMP"
+            ])
 
             create_query = f"""
-                CREATE TABLE {table_name} (
-                    symbol SYMBOL capacity 256 CACHE,
-                    open DOUBLE,
-                    high DOUBLE,
-                    low DOUBLE,
-                    close DOUBLE,
-                    volume DOUBLE,
-                    sma_10 DOUBLE,
-                    sma_20 DOUBLE,
-                    sma_50 DOUBLE,
-                    sma_100 DOUBLE,
-                    sma_200 DOUBLE,
-                    ema_10 DOUBLE,
-                    ema_20 DOUBLE,
-                    ema_50 DOUBLE,
-                    ema_100 DOUBLE,
-                    ema_200 DOUBLE,
-                    rsi_14 DOUBLE,
-                    rsi_21 DOUBLE,
-                    macd DOUBLE,
-                    macd_signal DOUBLE,
-                    macd_hist DOUBLE,
-                    bb_upper DOUBLE,
-                    bb_middle DOUBLE,
-                    bb_lower DOUBLE,
-                    bb_width DOUBLE,
-                    bb_percent DOUBLE,
-                    atr_14 DOUBLE,
-                    atr_21 DOUBLE,
-                    adx_14 DOUBLE,
-                    plus_di DOUBLE,
-                    minus_di DOUBLE,
-                    cci_20 DOUBLE,
-                    stoch_k DOUBLE,
-                    stoch_d DOUBLE,
-                    williams_r DOUBLE,
-                    mfi_14 DOUBLE,
-                    obv DOUBLE,
-                    vwap DOUBLE,
-                    pivot DOUBLE,
-                    resistance_1 DOUBLE,
-                    resistance_2 DOUBLE,
-                    resistance_3 DOUBLE,
-                    support_1 DOUBLE,
-                    support_2 DOUBLE,
-                    support_3 DOUBLE,
-                    volume_sma_20 DOUBLE,
-                    volume_ratio DOUBLE,
-                    price_change_1 DOUBLE,
-                    price_change_5 DOUBLE,
-                    price_change_10 DOUBLE,
-                    price_change_20 DOUBLE,
-                    log_return_1 DOUBLE,
-                    log_return_5 DOUBLE,
-                    log_return_10 DOUBLE,
-                    log_return_20 DOUBLE,
-                    volatility_20 DOUBLE,
-                    volatility_50 DOUBLE,
-                    sharpe_ratio_20 DOUBLE,
-                    high_low_ratio DOUBLE,
-                    close_open_ratio DOUBLE,
-                    upper_shadow DOUBLE,
-                    lower_shadow DOUBLE,
-                    body_size DOUBLE,
-                    is_bullish_candle BOOLEAN,
-                    trend_strength DOUBLE,
-                    momentum_score DOUBLE,
-                    volume_momentum DOUBLE,
-                    price_position DOUBLE,
-                    market_regime LONG,
-                    avg_spread DOUBLE,
-                    spread_volatility DOUBLE,
-                    relative_spread DOUBLE,
-                    spread_momentum DOUBLE,
-                    buy_pressure DOUBLE,
-                    sell_pressure DOUBLE,
-                    order_flow_imbalance DOUBLE,
-                    volume_weighted_buy_pressure DOUBLE,
-                    vwap_deviation_5 DOUBLE,
-                    vwap_deviation_10 DOUBLE,
-                    vwap_deviation_20 DOUBLE,
-                    vwap_deviation_50 DOUBLE,
-                    volume_concentration DOUBLE,
-                    avg_trade_size DOUBLE,
-                    trade_size_momentum DOUBLE,
-                    price_impact DOUBLE,
-                    kyle_lambda DOUBLE,
-                    amihud_illiquidity DOUBLE,
-                    volume_turnover DOUBLE,
-                    effective_spread DOUBLE,
-                    realized_volatility DOUBLE,
-                    depth_imbalance DOUBLE,
-                    feature_version LONG,
-                    timestamp TIMESTAMP
+                CREATE TABLE IF NOT EXISTS {table_name} (
+                    {', '.join(columns)}
                 ) timestamp(timestamp) PARTITION BY DAY WAL DEDUP UPSERT KEYS(symbol, timestamp);
             """
 
             try:
                 self.questdb.execute_query(create_query)
                 self.logger.info(f"Created features table {table_name}")
-
-                time.sleep(2)
-
             except Exception as e:
-                self.logger.error(f"Failed to create features table {table_name}: {e}")
-                raise
+                self.logger.error(f"Failed to create table {table_name}: {e}")
 
     async def _calculate_historical_features(self):
-        self.logger.info("Calculating features for historical data")
+        self.logger.info("Calculating historical features")
 
         for symbol in self.symbols:
             for interval in self.intervals:
                 try:
-                    table_name = f"klines_{interval}"
-                    count_query = f"SELECT count() as cnt FROM {table_name} WHERE symbol = '{symbol}'"
-                    result = self.questdb.execute_query(count_query)
-                    total_klines = result[0]['cnt'] if result else 0
-
-                    self.logger.info(f"Processing {total_klines} klines for {symbol} {interval}")
-
-                    if total_klines == 0:
-                        continue
-
-                    min_ts, max_ts = self.questdb.get_timestamp_range(symbol, interval)
-                    if min_ts is None or max_ts is None:
-                        self.logger.warning(f"No data found for {symbol} {interval}")
-                        continue
-
-                    chunk_size = 50000
-                    lookback_size = 200
-                    processed_timestamps = set()
-
-                    interval_ms = self._get_interval_ms(interval)
-                    chunk_duration = interval_ms * chunk_size
-
-                    current_start = min_ts
-
-                    while current_start < max_ts:
-                        lookback_start = max(min_ts, current_start - (lookback_size * interval_ms))
-                        chunk_end = min(max_ts, current_start + chunk_duration)
-
-                        df = self.questdb.get_klines_by_timestamp_range(
-                            symbol, interval, lookback_start, chunk_end
-                        )
-
-                        if df.empty:
-                            current_start = chunk_end
-                            continue
-
-                        if df.index.tz is not None:
-                            df.index = df.index.tz_localize(None)
-
-                        df = df[~df.index.duplicated(keep='first')]
-
-                        features_df = self._calculate_all_features(df, symbol, interval)
-
-                        if not features_df.empty:
-                            new_features = features_df[features_df.index >= pd.Timestamp(current_start, unit='ns')]
-                            new_features = new_features[~new_features.index.isin(processed_timestamps)]
-
-                            if not new_features.empty:
-                                self._store_features(symbol, interval, new_features)
-                                processed_timestamps.update(new_features.index)
-
-                        self.logger.info(
-                            f"Processed chunk for {symbol} {interval}: "
-                            f"{pd.Timestamp(current_start, unit='ns')} to {pd.Timestamp(chunk_end, unit='ns')}"
-                        )
-
-                        current_start = chunk_end
-                        await asyncio.sleep(0.5)
-
-                    self.logger.info(
-                        f"Completed historical features for {symbol} {interval}: {len(processed_timestamps)} total features"
-                    )
-
+                    await self._process_symbol_interval(symbol, interval)
                 except Exception as e:
-                    self.logger.error(f"Error calculating historical features for {symbol} {interval}: {e}")
+                    self.logger.error(f"Error processing {symbol} {interval}: {e}")
+
+    async def _process_symbol_interval(self, symbol: str, interval: str):
+        table_name = f"klines_{interval}"
+
+        min_ts, max_ts = self.questdb.get_timestamp_range(symbol, interval)
+        if min_ts is None or max_ts is None:
+            self.logger.warning(f"No data for {symbol} {interval}")
+            return
+
+        chunk_size = 50000
+        lookback = 200
+        interval_ms = self._get_interval_ms(interval)
+
+        current_ts = min_ts
+
+        while current_ts < max_ts:
+            start_ts = max(min_ts, current_ts - (lookback * interval_ms))
+            end_ts = min(max_ts, current_ts + (chunk_size * interval_ms))
+
+            df = self.questdb.get_klines_by_timestamp_range(
+                symbol, interval, start_ts, end_ts
+            )
+
+            if df.empty:
+                current_ts = end_ts
+                continue
+
+            features_df = self._calculate_features(df, symbol, interval)
+
+            chunk_features = features_df[
+                (features_df.index >= pd.Timestamp(current_ts, unit='ns')) &
+                (features_df.index < pd.Timestamp(end_ts, unit='ns'))
+                ]
+
+            if not chunk_features.empty:
+                await self._store_features_batch(symbol, interval, chunk_features)
+
+            current_ts = end_ts
+            await asyncio.sleep(0.1)
+
+    def _calculate_features(self, df: pd.DataFrame, symbol: str, interval: str) -> pd.DataFrame:
+        if df.empty or len(df) < 20:
+            return pd.DataFrame()
+
+        df = df.sort_index()
+
+        if df.index.tz is not None:
+            df.index = df.index.tz_localize(None)
+
+        features = pd.DataFrame(index=df.index)
+        features[['open', 'high', 'low', 'close', 'volume']] = df[['open', 'high', 'low', 'close', 'volume']]
+
+        try:
+            tech_features = self.technical_calculator.calculate(df)
+            features = features.join(tech_features, how='left')
+        except Exception as e:
+            self.logger.warning(f"Technical features error: {e}")
+
+        try:
+            custom_features = self.custom_calculator.calculate(df)
+            features = features.join(custom_features, how='left')
+        except Exception as e:
+            self.logger.warning(f"Custom features error: {e}")
+
+        try:
+            micro_features = self.microstructure_calculator.calculate(df)
+            features = features.join(micro_features, how='left')
+        except Exception as e:
+            self.logger.warning(f"Microstructure features error: {e}")
+
+        features['symbol'] = symbol
+        features['feature_version'] = 1
+
+        features = features.replace([np.inf, -np.inf], np.nan)
+        features = features.dropna(how='all',
+                                   subset=[col for col in features.columns if col not in ['symbol', 'feature_version']])
+
+        return features
+
+    async def _store_features_batch(self, symbol: str, interval: str, features_df: pd.DataFrame):
+        if features_df.empty:
+            return
+
+        table_name = f"features_{interval}"
+
+        if features_df.index.name != 'timestamp':
+            features_df = features_df.reset_index(names=['timestamp'])
+        else:
+            features_df = features_df.reset_index()
+
+        records = features_df.to_dict('records')
+
+        for record in records:
+            timestamp_val = record.get('timestamp')
+            if pd.isna(timestamp_val):
+                continue
+
+            if isinstance(timestamp_val, pd.Timestamp):
+                timestamp_ns = int(timestamp_val.timestamp() * 1_000_000_000)
+            else:
+                timestamp_ns = int(pd.Timestamp(timestamp_val).timestamp() * 1_000_000_000)
+
+            numeric_fields = []
+            for key, value in record.items():
+                if key in ['symbol', 'timestamp']:
+                    continue
+
+                if pd.isna(value):
+                    continue
+
+                if isinstance(value, bool):
+                    numeric_fields.append(f"{key}={'true' if value else 'false'}")
+                elif key in ['feature_version']:
+                    numeric_fields.append(f"{key}={int(value)}i")
+                else:
+                    numeric_fields.append(f"{key}={float(value)}")
+
+            if numeric_fields:
+                line = f"{table_name},symbol={symbol} {','.join(numeric_fields)} {timestamp_ns}"
+                self.questdb._send_line(line)
+
+        self.metrics.record_db_write(table_name, 'success')
+
+    async def process_realtime_updates(self):
+        channels = [f"kline:{symbol}:{interval}" for symbol in self.symbols for interval in self.intervals]
+        self.redis.subscribe(channels)
+
+        while self.is_running:
+            try:
+                message = self.redis.get_message(timeout=1.0)
+                if message and message['type'] == 'message':
+                    await self._process_kline_update(message)
+            except Exception as e:
+                self.logger.error(f"Realtime processing error: {e}")
+
+            await asyncio.sleep(0.001)
+
+    async def _process_kline_update(self, message: Dict[str, Any]):
+        try:
+            channel = message['channel'].decode('utf-8')
+            _, symbol, interval = channel.split(':')
+
+            kline_data = message['data']
+            kline_timestamp = int(kline_data['timestamp'])
+
+            if kline_timestamp <= self.last_processed[symbol][interval]:
+                return
+
+            lookback = self.config.get('feature_engine.lookback_periods', 300)
+            df = self.questdb.get_klines_df(symbol, interval, limit=lookback)
+
+            if df.empty or len(df) < 20:
+                return
+
+            features_df = self._calculate_features(df, symbol, interval)
+
+            if not features_df.empty:
+                latest_features = features_df.iloc[-1:]
+                self.feature_buffer[symbol][interval].append(latest_features)
+
+                self.last_processed[symbol][interval] = kline_timestamp
+
+                total_buffer_size = sum(
+                    len(features)
+                    for intervals in self.feature_buffer.values()
+                    for features in intervals.values()
+                )
+
+                if total_buffer_size >= self.buffer_size:
+                    await self.flush_buffer()
+
+                self.metrics.record_ws_message(symbol, 'feature_update')
+
+        except Exception as e:
+            self.logger.error(f"Error processing kline update: {e}")
+
+    async def flush_buffer(self):
+        if not self.feature_buffer:
+            return
+
+        for symbol, intervals in list(self.feature_buffer.items()):
+            for interval, features_list in list(intervals.items()):
+                if not features_list:
+                    continue
+
+                try:
+                    combined_df = pd.concat(features_list)
+                    if not combined_df.empty:
+                        await self._store_features_batch(symbol, interval, combined_df)
+                except Exception as e:
+                    self.logger.error(f"Failed to flush features for {symbol} {interval}: {e}")
+
+        self.feature_buffer.clear()
+
+    async def periodic_flush(self):
+        while self.is_running:
+            await asyncio.sleep(self.flush_interval)
+            await self.flush_buffer()
+
+    async def quality_monitoring(self):
+        while self.is_running:
+            try:
+                for symbol in self.symbols:
+                    for interval in ['1h', '1d']:
+                        try:
+                            features_df = self.questdb.get_features_df(symbol, interval, limit=1000)
+
+                            if not features_df.empty:
+                                quality_report = self.quality_monitor.check_quality(features_df)
+
+                                self.redis.set_json(
+                                    f"quality:{symbol}:{interval}",
+                                    quality_report,
+                                    expire=3600
+                                )
+
+                                if quality_report.get('overall_quality_score', 100) < 70:
+                                    self.logger.warning(
+                                        f"Low quality score for {symbol} {interval}: "
+                                        f"{quality_report['overall_quality_score']:.2f}"
+                                    )
+                        except Exception as e:
+                            self.logger.warning(f"Quality check error for {symbol} {interval}: {e}")
+
+            except Exception as e:
+                self.logger.error(f"Quality monitoring error: {e}")
+
+            await asyncio.sleep(600)
 
     def _get_interval_ms(self, interval: str) -> int:
         interval_map = {
@@ -328,254 +431,6 @@ class FeatureEngineService:
             '1d': 86400000
         }
         return interval_map.get(interval, 60000)
-
-    def _calculate_all_features(self, df: pd.DataFrame, symbol: str, interval: str) -> pd.DataFrame:
-        if df.index.duplicated().any():
-            df = df[~df.index.duplicated(keep='first')]
-
-        features_df = df[['open', 'high', 'low', 'close', 'volume']].copy()
-
-        try:
-            technical_features = self.technical_calculator.calculate(df)
-            features_df = pd.concat([features_df, technical_features], axis=1)
-        except Exception as e:
-            self.logger.warning(f"Error calculating technical features: {e}")
-
-        try:
-            custom_features = self.custom_calculator.calculate(df)
-            features_df = pd.concat([features_df, custom_features], axis=1)
-        except Exception as e:
-            self.logger.warning(f"Error calculating custom features: {e}")
-
-        try:
-            microstructure_features = self.microstructure_calculator.calculate(df)
-            features_df = pd.concat([features_df, microstructure_features], axis=1)
-        except Exception as e:
-            self.logger.warning(f"Error calculating microstructure features: {e}")
-
-        features_df['symbol'] = symbol
-        features_df['feature_version'] = 1
-
-        features_df = features_df.replace([np.inf, -np.inf], np.nan)
-
-        numeric_columns = features_df.select_dtypes(include=[np.number]).columns
-        for col in numeric_columns:
-            if features_df[col].dtype != np.float64 and col not in ['feature_version', 'market_regime']:
-                features_df[col] = features_df[col].astype(np.float64)
-
-        features_df[numeric_columns] = features_df[numeric_columns].ffill().bfill()
-
-        return features_df
-
-    def _store_features(self, symbol: str, interval: str, features_df: pd.DataFrame):
-        table_name = f"features_{interval}"
-
-        if features_df.index.name != 'timestamp':
-            features_df = features_df.reset_index(names=['timestamp'])
-        else:
-            features_df = features_df.reset_index()
-
-        records = features_df.to_dict('records')
-
-        batch_size = 50
-        for i in range(0, len(records), batch_size):
-            batch = records[i:i + batch_size]
-
-            for record in batch:
-                if 'timestamp' not in record:
-                    self.logger.error(f"Missing timestamp in record for {symbol} {interval}")
-                    continue
-
-                timestamp_val = record['timestamp']
-                if pd.isna(timestamp_val):
-                    self.logger.warning(f"NaN timestamp for {symbol} {interval}, skipping record")
-                    continue
-
-                if isinstance(timestamp_val, pd.Timestamp):
-                    timestamp_ns = int(timestamp_val.timestamp() * 1_000_000_000)
-                elif isinstance(timestamp_val, (int, float)):
-                    timestamp_ns = int(timestamp_val * 1_000_000_000)
-                else:
-                    timestamp_ns = int(pd.Timestamp(timestamp_val).timestamp() * 1_000_000_000)
-
-                numeric_fields = []
-                for key, value in record.items():
-                    if key in ['symbol', 'timestamp']:
-                        continue
-
-                    if pd.isna(value):
-                        value = 0.0
-
-                    if isinstance(value, bool):
-                        numeric_fields.append(f"{key}={'true' if value else 'false'}")
-                    elif isinstance(value, (int, float)):
-                        if key in ['market_regime', 'feature_version']:
-                            numeric_fields.append(f"{key}={int(value)}i")
-                        else:
-                            numeric_fields.append(f"{key}={float(value)}")
-
-                line = f"{table_name},symbol={symbol} {','.join(numeric_fields)} {timestamp_ns}"
-
-                self.questdb._send_line(line)
-
-            if i + batch_size < len(records):
-                time.sleep(0.05)
-
-    async def process_realtime_updates(self):
-        channels = []
-        for symbol in self.symbols:
-            for interval in self.intervals:
-                channels.append(f"kline:{symbol}:{interval}")
-
-        self.redis.subscribe(channels)
-
-        while self.is_running:
-            try:
-                message = self.redis.get_message(timeout=1.0)
-
-                if message and message['type'] == 'message':
-                    await self._process_kline_update(message)
-
-            except Exception as e:
-                self.logger.error(f"Error processing realtime update: {e}")
-
-            await asyncio.sleep(0.001)
-
-    async def _process_kline_update(self, message: Dict[str, Any]):
-        try:
-            channel = message['channel'].decode('utf-8')
-            parts = channel.split(':')
-            symbol = parts[1]
-            interval = parts[2]
-
-            kline_data = message['data']
-
-            lookback_periods = max(200, self.config.get('feature_engine.lookback_periods', 300))
-
-            df = self.questdb.get_klines_df(symbol, interval, limit=lookback_periods)
-
-            if not df.empty:
-                if df.index.tz is not None:
-                    df.index = df.index.tz_localize(None)
-
-                df = df[~df.index.duplicated(keep='first')]
-
-                new_timestamp = pd.Timestamp(kline_data['timestamp'], unit='s')
-                if new_timestamp.tz is not None:
-                    new_timestamp = new_timestamp.tz_localize(None)
-
-                if new_timestamp in df.index:
-                    df = df.drop(new_timestamp)
-
-                new_row = pd.DataFrame([{
-                    'open': kline_data['open'],
-                    'high': kline_data['high'],
-                    'low': kline_data['low'],
-                    'close': kline_data['close'],
-                    'volume': kline_data['volume'],
-                    'quote_volume': kline_data.get('quote_volume', 0),
-                    'trades': kline_data.get('trades', 0),
-                    'taker_buy_volume': kline_data.get('taker_buy_volume', 0),
-                    'taker_buy_quote_volume': kline_data.get('taker_buy_quote_volume', 0)
-                }], index=[new_timestamp])
-
-                df = pd.concat([df, new_row])
-                df = df.iloc[-lookback_periods:]
-
-                features_df = self._calculate_all_features(df, symbol, interval)
-
-                if not features_df.empty:
-                    latest_features = features_df.iloc[-1:].copy()
-                    self.feature_buffer[symbol][interval].append(latest_features)
-
-                    buffer_size = sum(
-                        len(features_list)
-                        for symbol_intervals in self.feature_buffer.values()
-                        for features_list in symbol_intervals.values()
-                    )
-
-                    if buffer_size >= self.buffer_size:
-                        await self.flush_buffer()
-
-                    latest_dict = latest_features.reset_index().to_dict('records')[0]
-
-                    for key, value in latest_dict.items():
-                        if isinstance(value, pd.Timestamp):
-                            latest_dict[key] = value.isoformat()
-                        elif isinstance(value, np.ndarray):
-                            latest_dict[key] = value.tolist()
-                        elif isinstance(value, (np.int64, np.int32)):
-                            latest_dict[key] = int(value)
-                        elif isinstance(value, (np.float64, np.float32)):
-                            latest_dict[key] = float(value)
-                        elif pd.isna(value):
-                            latest_dict[key] = None
-
-                    self.redis.publish(f"features:{symbol}:{interval}", latest_dict)
-
-            self.metrics.record_ws_message(symbol, 'feature_update')
-
-        except Exception as e:
-            self.logger.error(f"Error processing kline update: {e}")
-
-    async def flush_buffer(self):
-        if not self.feature_buffer:
-            return
-
-        for symbol, intervals in self.feature_buffer.items():
-            for interval, features_list in intervals.items():
-                if not features_list:
-                    continue
-
-                try:
-                    combined_df = pd.concat(features_list)
-
-                    if combined_df.index.duplicated().any():
-                        combined_df = combined_df[~combined_df.index.duplicated(keep='first')]
-
-                    self._store_features(symbol, interval, combined_df)
-
-                except Exception as e:
-                    self.logger.error(f"Failed to flush features for {symbol} {interval}: {e}")
-
-        self.feature_buffer.clear()
-
-    async def periodic_flush(self):
-        while self.is_running:
-            await asyncio.sleep(self.flush_interval)
-            await self.flush_buffer()
-
-    async def quality_monitoring(self):
-        while self.is_running:
-            try:
-                for symbol in self.symbols:
-                    for interval in self.intervals:
-                        try:
-                            features_df = self.questdb.get_features_df(symbol, interval, limit=500)
-
-                            if not features_df.empty:
-                                quality_metrics = self.quality_monitor.check_quality(features_df)
-
-                                self.redis.set_json(
-                                    f"quality:{symbol}:{interval}",
-                                    quality_metrics,
-                                    expire=3600
-                                )
-
-                                if 'missing_analysis' in quality_metrics and 'missing_percentage' in quality_metrics[
-                                    'missing_analysis']:
-                                    if quality_metrics['missing_analysis']['missing_percentage'] > 10:
-                                        self.logger.warning(
-                                            f"High missing data for {symbol} {interval}: "
-                                            f"{quality_metrics['missing_analysis']['missing_percentage']:.2f}%"
-                                        )
-                        except Exception as e:
-                            self.logger.warning(f"Skipping quality check for {symbol} {interval}: {e}")
-
-            except Exception as e:
-                self.logger.error(f"Quality monitoring error: {e}")
-
-            await asyncio.sleep(300)
 
     async def start(self):
         self.is_running = True

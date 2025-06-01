@@ -17,6 +17,14 @@ class DataQualityMonitor:
         self.feature_stats = defaultdict(dict)
 
     def check_quality(self, df: pd.DataFrame) -> Dict[str, any]:
+        if df.empty:
+            return {
+                'overall_quality_score': 0.0,
+                'total_rows': 0,
+                'total_features': 0,
+                'error': 'Empty dataframe'
+            }
+
         quality_report = {
             'total_rows': len(df),
             'total_features': len(df.columns),
@@ -55,23 +63,30 @@ class DataQualityMonitor:
         outlier_details = {}
 
         for col in numeric_cols:
-            if col in ['symbol', 'timestamp', 'feature_version', 'market_regime']:
+            if col in ['symbol', 'timestamp', 'feature_version']:
                 continue
 
-            z_scores = np.abs(stats.zscore(df[col].dropna()))
-            outliers = z_scores > 3
-            outlier_count = outliers.sum()
+            data = df[col].dropna()
+            if len(data) < 3:
+                continue
 
-            if outlier_count > 0:
-                outlier_counts[col] = int(outlier_count)
-                outlier_percentage = (outlier_count / len(df[col].dropna())) * 100
+            try:
+                z_scores = np.abs(stats.zscore(data))
+                outliers = z_scores > 3
+                outlier_count = outliers.sum()
 
-                if outlier_percentage > self.quality_thresholds['outlier_percentage']:
-                    outlier_details[col] = {
-                        'count': int(outlier_count),
-                        'percentage': float(outlier_percentage),
-                        'max_zscore': float(z_scores.max())
-                    }
+                if outlier_count > 0:
+                    outlier_counts[col] = int(outlier_count)
+                    outlier_percentage = (outlier_count / len(data)) * 100
+
+                    if outlier_percentage > self.quality_thresholds['outlier_percentage']:
+                        outlier_details[col] = {
+                            'count': int(outlier_count),
+                            'percentage': float(outlier_percentage),
+                            'max_zscore': float(z_scores.max())
+                        }
+            except:
+                continue
 
         return {
             'total_outliers': sum(outlier_counts.values()),
@@ -80,45 +95,55 @@ class DataQualityMonitor:
         }
 
     def _analyze_correlations(self, df: pd.DataFrame) -> Dict[str, any]:
-        numeric_cols = df.select_dtypes(include=[np.number]).columns
-        numeric_cols = [col for col in numeric_cols if col not in ['symbol', 'timestamp', 'feature_version']]
+        numeric_cols = [
+            col for col in df.select_dtypes(include=[np.number]).columns
+            if col not in ['symbol', 'timestamp', 'feature_version']
+        ]
 
         if len(numeric_cols) < 2:
-            return {'highly_correlated_pairs': []}
+            return {'highly_correlated_pairs': [], 'max_correlation': 0.0}
 
-        corr_matrix = df[numeric_cols].corr()
-        highly_correlated = []
+        try:
+            corr_matrix = df[numeric_cols].corr()
+            highly_correlated = []
 
-        for i in range(len(corr_matrix.columns)):
-            for j in range(i + 1, len(corr_matrix.columns)):
-                corr_value = corr_matrix.iloc[i, j]
-                if abs(corr_value) > self.quality_thresholds['correlation_threshold']:
-                    highly_correlated.append({
-                        'feature1': corr_matrix.columns[i],
-                        'feature2': corr_matrix.columns[j],
-                        'correlation': float(corr_value)
-                    })
+            for i in range(len(corr_matrix.columns)):
+                for j in range(i + 1, len(corr_matrix.columns)):
+                    corr_value = corr_matrix.iloc[i, j]
+                    if not np.isnan(corr_value) and abs(corr_value) > self.quality_thresholds['correlation_threshold']:
+                        highly_correlated.append({
+                            'feature1': corr_matrix.columns[i],
+                            'feature2': corr_matrix.columns[j],
+                            'correlation': float(corr_value)
+                        })
 
-        return {
-            'highly_correlated_pairs': highly_correlated,
-            'max_correlation': float(corr_matrix.abs().values[~np.eye(len(corr_matrix), dtype=bool)].max())
-            if len(corr_matrix) > 1 else 0.0
-        }
+            mask = ~np.eye(len(corr_matrix), dtype=bool)
+            max_corr = float(np.nanmax(np.abs(corr_matrix.values[mask]))) if mask.any() else 0.0
+
+            return {
+                'highly_correlated_pairs': highly_correlated,
+                'max_correlation': max_corr
+            }
+        except:
+            return {'highly_correlated_pairs': [], 'max_correlation': 0.0}
 
     def _analyze_variance(self, df: pd.DataFrame) -> Dict[str, any]:
         numeric_cols = df.select_dtypes(include=[np.number]).columns
         low_variance_features = []
 
         for col in numeric_cols:
-            if col in ['symbol', 'timestamp', 'feature_version', 'is_bullish_candle']:
+            if col in ['symbol', 'timestamp', 'feature_version']:
                 continue
 
-            variance = df[col].var()
-            if variance < self.quality_thresholds['zero_variance_threshold']:
-                low_variance_features.append({
-                    'feature': col,
-                    'variance': float(variance)
-                })
+            try:
+                variance = df[col].var()
+                if variance < self.quality_thresholds['zero_variance_threshold']:
+                    low_variance_features.append({
+                        'feature': col,
+                        'variance': float(variance) if not np.isnan(variance) else 0.0
+                    })
+            except:
+                continue
 
         return {
             'low_variance_features': low_variance_features,
@@ -174,13 +199,21 @@ class DataQualityMonitor:
             missing_pct = (df[col].isnull().sum() / len(df)) * 100
             score -= min(missing_pct * 2, 50)
 
-            z_scores = np.abs(stats.zscore(df[col].dropna()))
-            outlier_pct = ((z_scores > 3).sum() / len(df[col].dropna())) * 100
-            score -= min(outlier_pct * 5, 30)
+            data = df[col].dropna()
+            if len(data) > 3:
+                try:
+                    z_scores = np.abs(stats.zscore(data))
+                    outlier_pct = ((z_scores > 3).sum() / len(data)) * 100
+                    score -= min(outlier_pct * 5, 30)
+                except:
+                    pass
 
-            variance = df[col].var()
-            if variance < self.quality_thresholds['zero_variance_threshold']:
-                score -= 20
+            try:
+                variance = df[col].var()
+                if variance < self.quality_thresholds['zero_variance_threshold']:
+                    score -= 20
+            except:
+                pass
 
             feature_scores[col] = max(score, 0.0)
 
@@ -192,15 +225,16 @@ class DataQualityMonitor:
         missing_penalty = min(quality_report['missing_analysis']['missing_percentage'] * 2, 30)
         score -= missing_penalty
 
-        outlier_ratio = (quality_report['outlier_analysis']['total_outliers'] /
-                         (quality_report['total_rows'] * quality_report['total_features'])) * 100
-        outlier_penalty = min(outlier_ratio * 5, 20)
-        score -= outlier_penalty
+        total_cells = quality_report['total_rows'] * quality_report['total_features']
+        if total_cells > 0:
+            outlier_ratio = (quality_report['outlier_analysis']['total_outliers'] / total_cells) * 100
+            outlier_penalty = min(outlier_ratio * 5, 20)
+            score -= outlier_penalty
 
         correlation_penalty = len(quality_report['correlation_analysis']['highly_correlated_pairs']) * 2
         score -= min(correlation_penalty, 20)
 
-        variance_penalty = len(quality_report['variance_analysis']['low_variance_features']) * 2
+        variance_penalty = quality_report['variance_analysis']['zero_variance_count'] * 5
         score -= min(variance_penalty, 20)
 
         if not quality_report['data_integrity']['is_valid']:
@@ -212,18 +246,21 @@ class DataQualityMonitor:
         recommendations = []
 
         if quality_report['missing_analysis']['critical_missing_features']:
+            features = quality_report['missing_analysis']['critical_missing_features'][:3]
             recommendations.append(
-                f"High missing data in features: {', '.join(quality_report['missing_analysis']['critical_missing_features'])[:100]}..."
+                f"High missing data in features: {', '.join(features)}"
             )
 
         if quality_report['outlier_analysis']['critical_outlier_features']:
+            features = list(quality_report['outlier_analysis']['critical_outlier_features'].keys())[:3]
             recommendations.append(
-                f"Significant outliers in: {', '.join(quality_report['outlier_analysis']['critical_outlier_features'].keys())[:100]}..."
+                f"Significant outliers in: {', '.join(features)}"
             )
 
         if quality_report['correlation_analysis']['highly_correlated_pairs']:
+            count = len(quality_report['correlation_analysis']['highly_correlated_pairs'])
             recommendations.append(
-                f"Remove highly correlated features to reduce redundancy ({len(quality_report['correlation_analysis']['highly_correlated_pairs'])} pairs found)"
+                f"Remove highly correlated features ({count} pairs found)"
             )
 
         if quality_report['variance_analysis']['zero_variance_count'] > 0:
@@ -232,9 +269,9 @@ class DataQualityMonitor:
             )
 
         if not quality_report['data_integrity']['is_valid']:
-            recommendations.append("Fix data integrity issues before using features")
+            recommendations.append("Fix data integrity issues")
 
         if quality_report['overall_quality_score'] < 70:
-            recommendations.append("Overall quality score is low - review data pipeline")
+            recommendations.append("Overall quality needs improvement")
 
-        return recommendations
+        return recommendations[:5]

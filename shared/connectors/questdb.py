@@ -55,7 +55,7 @@ class QuestDBConnector:
             except (socket.error, BrokenPipeError, ConnectionResetError) as e:
                 if attempt < retry_count - 1:
                     self.logger.warning(f"Send failed (attempt {attempt + 1}/{retry_count}): {e}")
-                    time.sleep(0.1)
+                    time.sleep(0.1 * (attempt + 1))
                     self._connect()
                 else:
                     self.logger.error(f"Failed to send data after {retry_count} attempts")
@@ -135,7 +135,7 @@ class QuestDBConnector:
                     pass
 
         if total_written > 0:
-            self.logger.info(f"Successfully written {total_written}/{len(data_list)} records for {symbol} {interval}")
+            self.logger.info(f"Written {total_written}/{len(data_list)} records for {symbol} {interval}")
             self.metrics.record_db_write(table_name, 'success')
 
     def execute_query(self, query: str, retry_count: int = 3) -> List[Dict[str, Any]]:
@@ -159,41 +159,18 @@ class QuestDBConnector:
                     return [dict(zip(columns, row)) for row in rows]
                 else:
                     error_msg = f"Query failed with status {response.status_code}: {response.text}"
-                    if "could not mmap" in response.text:
-                        self.logger.warning(f"Memory mapping error, attempting to recover: {error_msg}")
-
-                        if attempt < retry_count - 1:
-                            time.sleep(5)
-
-                            table_match = query.split('FROM')[1].split('WHERE')[0].strip()
-                            if table_match:
-                                try:
-                                    self._vacuum_table(table_match)
-                                except:
-                                    pass
-                            continue
+                    if attempt < retry_count - 1:
+                        time.sleep(2 ** attempt)
+                        continue
                     raise Exception(error_msg)
 
             except Exception as e:
                 if attempt < retry_count - 1:
                     self.logger.warning(f"Query failed (attempt {attempt + 1}/{retry_count}): {e}")
-                    time.sleep(2)
+                    time.sleep(2 ** attempt)
                 else:
                     self.logger.error(f"Query execution failed after {retry_count} attempts: {e}")
                     raise
-
-    def _vacuum_table(self, table_name: str):
-        try:
-            vacuum_query = f"VACUUM TABLE {table_name}"
-            response = requests.get(
-                f"{self.http_base_url}/exec",
-                params={'query': vacuum_query},
-                timeout=10
-            )
-            if response.status_code == 200:
-                self.logger.info(f"Vacuumed table {table_name}")
-        except Exception as e:
-            self.logger.warning(f"Failed to vacuum table {table_name}: {e}")
 
     def get_latest_timestamp(self, symbol: str, interval: str) -> Optional[int]:
         table_name = f"klines_{interval}"
@@ -206,7 +183,13 @@ class QuestDBConnector:
         try:
             result = self.execute_query(query)
             if result and result[0]['timestamp'] is not None:
-                return int(result[0]['timestamp'] / 1000)
+                timestamp = result[0]['timestamp']
+
+                # Handle both integer and ISO string timestamps
+                if isinstance(timestamp, str):
+                    return int(pd.Timestamp(timestamp).timestamp() * 1000)
+                else:
+                    return int(timestamp / 1000)
         except Exception as e:
             self.logger.warning(f"Failed to get latest timestamp for {symbol} {interval}: {e}")
         return None
@@ -222,7 +205,18 @@ class QuestDBConnector:
         try:
             result = self.execute_query(query)
             if result and result[0]['min_ts'] is not None:
-                return (int(result[0]['min_ts']), int(result[0]['max_ts']))
+                min_ts = result[0]['min_ts']
+                max_ts = result[0]['max_ts']
+
+                # Handle both integer and ISO string timestamps
+                if isinstance(min_ts, str):
+                    min_ts = int(pd.Timestamp(min_ts).timestamp() * 1_000_000_000)
+                    max_ts = int(pd.Timestamp(max_ts).timestamp() * 1_000_000_000)
+                else:
+                    min_ts = int(min_ts)
+                    max_ts = int(max_ts)
+
+                return (min_ts, max_ts)
         except Exception as e:
             self.logger.warning(f"Failed to get timestamp range for {symbol} {interval}: {e}")
         return (None, None)
@@ -233,16 +227,8 @@ class QuestDBConnector:
         for interval in intervals:
             table_name = f"klines_{interval}"
 
-            drop_query = f"DROP TABLE IF EXISTS {table_name}"
-
-            try:
-                self.execute_query(drop_query)
-                self.logger.info(f"Dropped existing table {table_name}")
-            except:
-                pass
-
             create_query = f"""
-                CREATE TABLE {table_name} (
+                CREATE TABLE IF NOT EXISTS {table_name} (
                     symbol SYMBOL capacity 256 CACHE INDEX,
                     open DOUBLE,
                     high DOUBLE,
@@ -262,7 +248,6 @@ class QuestDBConnector:
                 self.logger.info(f"Created table {table_name}")
             except Exception as e:
                 self.logger.error(f"Failed to create table {table_name}: {e}")
-                raise
 
     def get_klines_df(self, symbol: str, interval: str,
                       start_time: Optional[int] = None,
@@ -334,6 +319,44 @@ class QuestDBConnector:
             self.logger.error(f"Failed to get klines by timestamp range: {e}")
             return pd.DataFrame()
 
+    def get_features_df(self, symbol: str, interval: str,
+                        start_time: Optional[int] = None,
+                        end_time: Optional[int] = None,
+                        limit: int = 1000) -> pd.DataFrame:
+        table_name = f"features_{interval}"
+
+        where_conditions = [f"symbol = '{symbol}'"]
+
+        if start_time:
+            where_conditions.append(f"timestamp >= {start_time}000000")
+        if end_time:
+            where_conditions.append(f"timestamp <= {end_time}000000")
+
+        where_clause = " AND ".join(where_conditions)
+
+        query = f"""
+            SELECT * FROM {table_name}
+            WHERE {where_clause}
+            ORDER BY timestamp DESC
+            LIMIT {limit}
+        """
+
+        try:
+            result = self.execute_query(query)
+
+            if not result:
+                return pd.DataFrame()
+
+            df = pd.DataFrame(result)
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ns')
+            df.set_index('timestamp', inplace=True)
+            df.sort_index(inplace=True)
+
+            return df
+        except Exception as e:
+            self.logger.error(f"Failed to get features dataframe: {e}")
+            return pd.DataFrame()
+
     def close(self):
         if self._socket:
             try:
@@ -357,93 +380,5 @@ class QuestDBConnector:
             pass
         return 0
 
-    def check_duplicates(self, symbol: str, interval: str) -> int:
-        table_name = f"klines_{interval}"
-        query = f"""
-            SELECT timestamp, count(*) as cnt 
-            FROM {table_name} 
-            WHERE symbol = '{symbol}' 
-            GROUP BY timestamp 
-            HAVING count(*) > 1
-        """
-
-        try:
-            result = self.execute_query(query)
-            if result:
-                return len(result)
-        except:
-            pass
-        return 0
-
     def wait_for_commit(self, timeout: int = 5):
         time.sleep(timeout)
-
-    def get_features_df(self, symbol: str, interval: str,
-                        start_time: Optional[int] = None,
-                        end_time: Optional[int] = None,
-                        limit: int = 1000) -> pd.DataFrame:
-        table_name = f"features_{interval}"
-
-        where_conditions = [f"symbol = '{symbol}'"]
-
-        if start_time:
-            where_conditions.append(f"timestamp >= {start_time}000000")
-        if end_time:
-            where_conditions.append(f"timestamp <= {end_time}000000")
-
-        where_clause = " AND ".join(where_conditions)
-
-        query = f"""
-               SELECT * FROM {table_name}
-               WHERE {where_clause}
-               ORDER BY timestamp DESC
-               LIMIT {limit}
-           """
-
-        max_retries = 5
-        for attempt in range(max_retries):
-            try:
-                result = self.execute_query(query)
-
-                if not result:
-                    return pd.DataFrame()
-
-                df = pd.DataFrame(result)
-                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ns')
-                df.set_index('timestamp', inplace=True)
-                df.sort_index(inplace=True)
-
-                return df
-            except Exception as e:
-                if "could not mmap" in str(e) and attempt < max_retries - 1:
-                    self.logger.warning(f"Memory mapping error on attempt {attempt + 1}, attempting recovery...")
-                    time.sleep(5)
-
-                    try:
-                        self._vacuum_table(table_name)
-                        self.optimize_table(table_name)
-                    except:
-                        pass
-                    continue
-
-                self.logger.error(f"Failed to get features dataframe: {e}")
-                return pd.DataFrame()
-
-        return pd.DataFrame()
-
-    def optimize_table(self, table_name: str):
-        try:
-            optimize_queries = [
-                f"ALTER TABLE {table_name} SET PARAM o3MaxLag = 600s",
-                f"ALTER TABLE {table_name} SET PARAM maxUncommittedRows = 100000"
-            ]
-
-            for query in optimize_queries:
-                try:
-                    self.execute_query(query)
-                except:
-                    pass
-
-            self.logger.info(f"Optimized table {table_name}")
-        except Exception as e:
-            self.logger.warning(f"Failed to optimize table {table_name}: {e}")

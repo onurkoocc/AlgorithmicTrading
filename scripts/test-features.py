@@ -48,7 +48,7 @@ def test_feature_pipeline():
                             logger.info(f"Latest features for {symbol} {interval}:")
                             for row in latest_features:
                                 logger.info(f"  {row['timestamp']}: close={row['close']:.2f}, "
-                                            f"sma_20={row['sma_20']:.2f}, rsi_14={row['rsi_14']:.2f}")
+                                            f"sma_20={row.get('sma_20', 0):.2f}, rsi_14={row.get('rsi_14', 0):.2f}")
 
                 quality_key = f"quality:{symbol}:{interval}"
                 quality_data = redis.get_json(quality_key)
