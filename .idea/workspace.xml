@@ -4,7 +4,7 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="81427cb1-1f01-45c2-9d19-eedb5dbc97cb" name="Changes" comment="fix connection errors">
+    <list default="true" id="81427cb1-1f01-45c2-9d19-eedb5dbc97cb" name="Changes" comment="fix feature calculation">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/services/feature-engine/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/services/feature-engine/main.py" afterDir="false" />
     </list>
@@ -85,7 +85,7 @@
       <workItem from="1748708569123" duration="5581000" />
       <workItem from="1748716616167" duration="14000" />
       <workItem from="1748728699406" duration="5051000" />
-      <workItem from="1748765007954" duration="6183000" />
+      <workItem from="1748765007954" duration="8384000" />
     </task>
     <task id="LOCAL-00001" summary="first commit">
       <option name="closed" value="true" />
@@ -215,7 +215,15 @@
       <option name="project" value="LOCAL" />
       <updated>1748770756951</updated>
     </task>
-    <option name="localTasksCounter" value="17" />
+    <task id="LOCAL-00017" summary="fix feature calculation">
+      <option name="closed" value="true" />
+      <created>1748774545369</created>
+      <option name="number" value="00017" />
+      <option name="presentableId" value="LOCAL-00017" />
+      <option name="project" value="LOCAL" />
+      <updated>1748774545369</updated>
+    </task>
+    <option name="localTasksCounter" value="18" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -248,6 +256,7 @@
     <MESSAGE value="database query error fixed" />
     <MESSAGE value="talib migration" />
     <MESSAGE value="fix connection errors" />
-    <option name="LAST_COMMIT_MESSAGE" value="fix connection errors" />
+    <MESSAGE value="fix feature calculation" />
+    <option name="LAST_COMMIT_MESSAGE" value="fix feature calculation" />
   </component>
 </project>

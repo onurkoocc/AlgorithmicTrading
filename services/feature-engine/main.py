@@ -195,46 +195,79 @@ class FeatureEngineService:
         table_name = f"klines_{interval}"
         features_table = f"features_{interval}"
 
+        klines_query = f"""
+            SELECT min(timestamp) as min_ts, max(timestamp) as max_ts, count() as cnt
+            FROM {table_name}
+            WHERE symbol = '{symbol}'
+        """
+
+        klines_result = self.questdb.execute_query(klines_query)
+        if not klines_result or klines_result[0]['min_ts'] is None:
+            self.logger.warning(f"No klines data for {symbol} {interval}")
+            return
+
+        min_klines_ts = klines_result[0]['min_ts']
+        max_klines_ts = klines_result[0]['max_ts']
+        total_klines = klines_result[0]['cnt']
+
+        if isinstance(min_klines_ts, str):
+            min_klines_ts = int(pd.Timestamp(min_klines_ts).timestamp() * 1_000_000_000)
+            max_klines_ts = int(pd.Timestamp(max_klines_ts).timestamp() * 1_000_000_000)
+
+        self.logger.info(
+            f"Klines for {symbol} {interval}: {total_klines} records from {pd.Timestamp(min_klines_ts, unit='ns')} to {pd.Timestamp(max_klines_ts, unit='ns')}")
+
         existing_features_query = f"""
-            SELECT max(timestamp) as max_ts 
+            SELECT count() as feature_count, max(timestamp) as max_ts 
             FROM {features_table} 
             WHERE symbol = '{symbol}'
         """
 
         existing_result = self.questdb.execute_query(existing_features_query)
+        existing_feature_count = 0
         last_feature_ts = None
 
-        if existing_result and existing_result[0]['max_ts'] is not None:
+        if existing_result and existing_result[0]['feature_count'] > 0:
+            existing_feature_count = existing_result[0]['feature_count']
             last_feature_ts = existing_result[0]['max_ts']
+
             if isinstance(last_feature_ts, str):
                 last_feature_ts = int(pd.Timestamp(last_feature_ts).timestamp() * 1_000_000_000)
             else:
                 last_feature_ts = int(last_feature_ts)
+
             self.logger.info(
-                f"Found existing features for {symbol} {interval} up to {pd.Timestamp(last_feature_ts, unit='ns')}")
+                f"Found {existing_feature_count} existing features for {symbol} {interval} up to {pd.Timestamp(last_feature_ts, unit='ns')}")
 
-        min_ts, max_ts = self.questdb.get_timestamp_range(symbol, interval)
-        if min_ts is None or max_ts is None:
-            self.logger.warning(f"No data for {symbol} {interval}")
-            return
+        if existing_feature_count >= total_klines - 200:
+            self.logger.info(
+                f"Features mostly complete for {symbol} {interval} ({existing_feature_count}/{total_klines})")
 
-        if last_feature_ts:
-            min_ts = last_feature_ts + 1
+            if last_feature_ts:
+                interval_ns = self._get_interval_ms(interval) * 1_000_000
+                start_ts = last_feature_ts + interval_ns
 
-        if min_ts >= max_ts:
-            self.logger.info(f"Features already up to date for {symbol} {interval}")
-            return
+                if start_ts > max_klines_ts:
+                    self.logger.info(f"Features already up to date for {symbol} {interval}")
+                    return
+            else:
+                start_ts = min_klines_ts
+        else:
+            self.logger.info(
+                f"Recalculating all features for {symbol} {interval} ({existing_feature_count}/{total_klines})")
+            start_ts = min_klines_ts
 
         chunk_size = 5000
         lookback = 200
         interval_ms = self._get_interval_ms(interval)
         processed_count = 0
 
-        current_ts = min_ts
+        current_ts = start_ts
 
-        while current_ts < max_ts:
-            lookback_start_ts = max(min_ts - (lookback * interval_ms * 1_000_000), 0)
-            chunk_end_ts = min(current_ts + (chunk_size * interval_ms * 1_000_000), max_ts)
+        while current_ts <= max_klines_ts:
+            lookback_start_ts = max(min_klines_ts, current_ts - (lookback * interval_ms * 1_000_000))
+            chunk_end_ts = min(current_ts + (chunk_size * interval_ms * 1_000_000),
+                               max_klines_ts + interval_ms * 1_000_000)
 
             await asyncio.sleep(self.query_delay)
 
@@ -244,12 +277,17 @@ class FeatureEngineService:
                 )
 
                 if df.empty:
+                    self.logger.warning(
+                        f"Empty dataframe for {symbol} {interval} from {pd.Timestamp(lookback_start_ts, unit='ns')} to {pd.Timestamp(chunk_end_ts, unit='ns')}")
                     current_ts = chunk_end_ts
                     continue
+
+                self.logger.debug(f"Processing {len(df)} klines for {symbol} {interval}")
 
                 features_df = self._calculate_features(df, symbol, interval)
 
                 if features_df.empty:
+                    self.logger.warning(f"Empty features for {symbol} {interval}")
                     current_ts = chunk_end_ts
                     continue
 
