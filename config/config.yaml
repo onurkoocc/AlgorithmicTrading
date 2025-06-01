@@ -42,7 +42,7 @@ feature_engine:
   flush_interval: 15
   lookback_periods: 300
   calculation_threads: 8
-  feature_version: 1
+  feature_version: 2  # Updated for TA-Lib integration
   quality_check_interval: 600
   batch_size: 500
   indicators:
@@ -51,11 +51,19 @@ feature_engine:
       ema_periods: [10, 20, 50, 100, 200]
       rsi_periods: [14, 21]
       atr_periods: [14, 21]
-      bb_length: 20
-      bb_std: 2
-      macd_fast: 12
-      macd_slow: 26
-      macd_signal: 9
+      bb_timeperiod: 20
+      bb_nbdevup: 2
+      bb_nbdevdn: 2
+      macd_fastperiod: 12
+      macd_slowperiod: 26
+      macd_signalperiod: 9
+      adx_timeperiod: 14
+      cci_timeperiod: 20
+      stoch_fastk_period: 14
+      stoch_slowk_period: 3
+      stoch_slowd_period: 3
+      mfi_timeperiod: 14
+      willr_timeperiod: 14
     custom:
       lookback_periods: [1, 5, 10, 20]
       volatility_windows: [20, 50]
@@ -66,6 +74,9 @@ feature_engine:
     outlier_percentage: 1.0
     correlation_threshold: 0.95
     zero_variance_threshold: 0.00001
+  optimization:
+    enable_talib_optimizations: true
+    min_batch_size_for_optimization: 50
 
 logging:
   level: INFO

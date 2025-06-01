@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import talib
 from typing import Dict, List, Optional, Tuple
 from collections import defaultdict
 
@@ -153,11 +154,12 @@ class MultiTimeframeAggregator:
 
         for col in feature_columns:
             if col in df.columns:
+                col_values = df[col].values
                 for window in windows:
                     if len(df) >= window:
-                        rolling_features[f'{col}_mean_{window}'] = df[col].rolling(window=window).mean()
-                        rolling_features[f'{col}_std_{window}'] = df[col].rolling(window=window).std()
-                        rolling_features[f'{col}_min_{window}'] = df[col].rolling(window=window).min()
-                        rolling_features[f'{col}_max_{window}'] = df[col].rolling(window=window).max()
+                        rolling_features[f'{col}_mean_{window}'] = talib.SMA(col_values, timeperiod=window)
+                        rolling_features[f'{col}_std_{window}'] = talib.STDDEV(col_values, timeperiod=window)
+                        rolling_features[f'{col}_min_{window}'] = talib.MIN(col_values, timeperiod=window)
+                        rolling_features[f'{col}_max_{window}'] = talib.MAX(col_values, timeperiod=window)
 
         return pd.concat([df, rolling_features], axis=1)

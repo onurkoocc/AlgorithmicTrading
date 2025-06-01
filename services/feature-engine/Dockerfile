@@ -5,8 +5,19 @@ RUN apt-get update && apt-get install -y \
     g++ \
     git \
     curl \
+    wget \
     libgomp1 \
+    make \
     && rm -rf /var/lib/apt/lists/*
+
+RUN wget https://github.com/ta-lib/ta-lib/releases/download/v0.6.4/ta-lib-0.6.4-src.tar.gz && \
+    tar -xzf ta-lib-0.6.4-src.tar.gz && \
+    cd ta-lib-0.6.4 && \
+    ./configure --prefix=/usr && \
+    make && \
+    make install && \
+    cd .. && \
+    rm -rf ta-lib-0.6.4 ta-lib-0.6.4-src.tar.gz
 
 WORKDIR /app
 

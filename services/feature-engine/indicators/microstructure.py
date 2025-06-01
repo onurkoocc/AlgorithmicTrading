@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import talib
 from typing import Optional
 
 
@@ -20,13 +21,21 @@ class MicrostructureCalculator:
         return features
 
     def _calculate_spread_features(self, df: pd.DataFrame, features: pd.DataFrame) -> pd.DataFrame:
-        spread = df['high'] - df['low']
+        high_prices = df['high'].values
+        low_prices = df['low'].values
+        close_prices = df['close'].values
 
-        features['spread_ratio'] = spread / df['close'].replace(0, np.nan)
+        spread = high_prices - low_prices
+
+        features['spread_ratio'] = np.where(
+            close_prices > 0,
+            spread / close_prices,
+            np.nan
+        )
 
         if len(df) >= 20:
-            features['avg_spread'] = spread.rolling(window=20).mean()
-            features['spread_volatility'] = spread.rolling(window=20).std()
+            features['avg_spread'] = talib.SMA(spread, timeperiod=20)
+            features['spread_volatility'] = talib.STDDEV(spread, timeperiod=20)
 
         return features
 
@@ -34,26 +43,47 @@ class MicrostructureCalculator:
         if 'volume' not in df.columns:
             return features
 
-        if len(df) >= 2:
-            price_change = df['close'].diff().abs()
-            sqrt_volume = np.sqrt(df['volume'].replace(0, np.nan))
+        close_prices = df['close'].values
+        volume = df['volume'].values
 
-            features['kyle_lambda'] = price_change / sqrt_volume
+        if len(df) >= 2:
+            price_change = np.abs(np.diff(close_prices, prepend=close_prices[0]))
+            sqrt_volume = np.sqrt(np.where(volume > 0, volume, np.nan))
+
+            kyle_lambda = np.where(
+                sqrt_volume > 0,
+                price_change / sqrt_volume,
+                np.nan
+            )
 
             if len(df) >= 20:
-                features['kyle_lambda'] = features['kyle_lambda'].rolling(window=20).mean()
+                features['kyle_lambda'] = talib.SMA(kyle_lambda, timeperiod=20)
+            else:
+                features['kyle_lambda'] = kyle_lambda
 
         if len(df) >= 20:
-            returns = df['close'].pct_change().abs()
-            dollar_volume = df['close'] * df['volume']
+            returns = np.abs(talib.ROC(close_prices, timeperiod=1) / 100.0)
+            dollar_volume = close_prices * volume
 
-            amihud = returns / dollar_volume.replace(0, np.nan)
-            features['amihud_illiquidity'] = amihud.rolling(window=20).mean()
+            amihud = np.where(
+                dollar_volume > 0,
+                returns / dollar_volume,
+                np.nan
+            )
+            features['amihud_illiquidity'] = talib.SMA(amihud, timeperiod=20)
 
-            volume_bar = df['volume'].rolling(window=20).mean()
-            volume_ratio = df['volume'] / volume_bar.replace(0, np.nan)
+            volume_bar = talib.SMA(volume, timeperiod=20)
+            volume_ratio = np.where(
+                volume_bar > 0,
+                volume / volume_bar,
+                np.nan
+            )
 
-            features['price_impact'] = returns / volume_ratio.replace(0, np.nan)
+            features['price_impact'] = np.where(
+                volume_ratio > 0,
+                returns / volume_ratio,
+                np.nan
+            )
 
         return features
 
@@ -61,14 +91,23 @@ class MicrostructureCalculator:
         if 'volume' not in df.columns:
             return features
 
-        if len(df) >= 100:
-            volume_20 = df['volume'].rolling(window=20).sum()
-            volume_100 = df['volume'].rolling(window=100).sum()
+        high_prices = df['high'].values
+        low_prices = df['low'].values
+        close_prices = df['close'].values
+        volume = df['volume'].values
 
-            features['volume_turnover'] = volume_20 / volume_100.replace(0, np.nan)
+        if len(df) >= 100:
+            volume_20 = talib.SUM(volume, timeperiod=20)
+            volume_100 = talib.SUM(volume, timeperiod=100)
+
+            features['volume_turnover'] = np.where(
+                volume_100 > 0,
+                volume_20 / volume_100,
+                np.nan
+            )
 
         if len(df) >= 2:
-            mid_price = (df['high'] + df['low']) / 2
-            features['effective_spread'] = 2 * (df['close'] - mid_price).abs()
+            mid_price = (high_prices + low_prices) / 2
+            features['effective_spread'] = 2 * np.abs(close_prices - mid_price)
 
         return features
