@@ -1,4 +1,3 @@
-# services/feature-engine/main.py
 import asyncio
 import signal
 import sys
@@ -54,6 +53,9 @@ class FeatureEngineService:
 
         self.query_delay = 0.1
         self.batch_delay = 0.5
+        self.failed_tables = set()
+        self.max_table_retries = 3
+        self.table_retry_count = defaultdict(int)
 
     def _init_connections(self, max_retries: int = 10, retry_delay: float = 3.0):
         for attempt in range(max_retries):
@@ -206,6 +208,34 @@ class FeatureEngineService:
                 f"Error converting timestamp '{ts_input}' (type: {type(ts_input)}) to nanosecond epoch: {e}")
             return None
 
+    async def _repair_table_if_needed(self, table_name: str, symbol: str) -> bool:
+        try:
+            if table_name in self.failed_tables:
+                if self.table_retry_count[table_name] >= self.max_table_retries:
+                    return False
+
+                self.logger.warning(f"Attempting to repair table {table_name}")
+
+                self.questdb.execute_query(f"VACUUM TABLE {table_name}")
+                await asyncio.sleep(2)
+
+                test_query = f"SELECT count() FROM {table_name} WHERE symbol = '{symbol}' LIMIT 1"
+                self.questdb.execute_query(test_query)
+
+                self.failed_tables.discard(table_name)
+                self.logger.info(f"Table {table_name} repair successful")
+                return True
+
+        except Exception as e:
+            self.logger.error(f"Failed to repair table {table_name}: {e}")
+            self.table_retry_count[table_name] += 1
+
+            if self.table_retry_count[table_name] >= self.max_table_retries:
+                self.logger.error(
+                    f"Table {table_name} marked as permanently failed after {self.max_table_retries} attempts")
+
+        return False
+
     async def _calculate_historical_features(self):
         self.logger.info("Calculating historical features")
 
@@ -221,6 +251,10 @@ class FeatureEngineService:
     async def _process_symbol_interval(self, symbol: str, interval: str):
         table_name = f"klines_{interval}"
         features_table = f"features_{interval}"
+
+        if features_table in self.failed_tables and self.table_retry_count[features_table] >= self.max_table_retries:
+            self.logger.warning(f"Skipping {symbol} {interval} - table {features_table} marked as failed")
+            return
 
         klines_query = f"""
             SELECT min(timestamp) as min_ts, max(timestamp) as max_ts, count() as cnt
@@ -254,22 +288,36 @@ class FeatureEngineService:
             WHERE symbol = '{symbol}'
         """
 
-        existing_result = self.questdb.execute_query(existing_features_query)
         existing_feature_count = 0
         last_feature_ts = None
 
-        if existing_result and existing_result[0]['feature_count'] > 0 and existing_result[0]['max_ts'] is not None:
-            existing_feature_count = existing_result[0]['feature_count']
-            last_feature_ts_raw = existing_result[0]['max_ts']
-            last_feature_ts = self._to_nanoseconds_epoch(last_feature_ts_raw)
+        try:
+            existing_result = self.questdb.execute_query(existing_features_query)
 
-            if last_feature_ts is not None:
-                self.logger.info(
-                    f"Found {existing_feature_count} existing features for {symbol} {interval} up to {pd.Timestamp(last_feature_ts, unit='ns')}")
+            if existing_result and existing_result[0]['feature_count'] > 0 and existing_result[0]['max_ts'] is not None:
+                existing_feature_count = existing_result[0]['feature_count']
+                last_feature_ts_raw = existing_result[0]['max_ts']
+                last_feature_ts = self._to_nanoseconds_epoch(last_feature_ts_raw)
+
+                if last_feature_ts is not None:
+                    self.logger.info(
+                        f"Found {existing_feature_count} existing features for {symbol} {interval} up to {pd.Timestamp(last_feature_ts, unit='ns')}")
+                else:
+                    self.logger.warning(
+                        f"Found {existing_feature_count} existing features for {symbol} {interval} but could not parse last feature timestamp: {last_feature_ts_raw}")
+                    existing_feature_count = 0
+
+        except Exception as e:
+            if "could not mmap" in str(e):
+                self.failed_tables.add(features_table)
+                self.logger.error(f"Memory mapping error for table {features_table}: {e}")
+
+                if await self._repair_table_if_needed(features_table, symbol):
+                    await self._process_symbol_interval(symbol, interval)
+                return
             else:
-                self.logger.warning(
-                    f"Found {existing_feature_count} existing features for {symbol} {interval} but could not parse last feature timestamp: {last_feature_ts_raw}")
-                existing_feature_count = 0
+                self.logger.error(f"Error checking existing features for {symbol} {interval}: {e}")
+                return
 
         interval_ns = self._get_interval_ms(interval) * 1_000_000
 
@@ -311,9 +359,7 @@ class FeatureEngineService:
             await asyncio.sleep(self.query_delay)
 
             try:
-                df = self.questdb.get_klines_by_timestamp_range(
-                    symbol, interval, lookback_start_ts, fetch_end_ts
-                )
+                df = self.questdb.get_klines_by_timestamp_range(symbol, interval, lookback_start_ts, fetch_end_ts)
 
                 if df.empty:
                     self.logger.warning(
@@ -515,15 +561,23 @@ class FeatureEngineService:
     async def _process_kline_update(self, message: Dict[str, Any]):
         try:
             channel_bytes = message.get('channel')
-            data_bytes = message.get('data')
+            data = message.get('data')
 
-            if not channel_bytes or not data_bytes:
+            if not channel_bytes or not data:
                 self.logger.warning(f"Received incomplete message: {message}")
                 return
 
-            channel = channel_bytes.decode('utf-8')
-            kline_data_str = data_bytes.decode('utf-8')
-            kline_update = json.loads(kline_data_str)
+            channel = channel_bytes.decode('utf-8') if isinstance(channel_bytes, bytes) else channel_bytes
+
+            if isinstance(data, dict):
+                kline_update = data
+            elif isinstance(data, bytes):
+                kline_update = json.loads(data.decode('utf-8'))
+            elif isinstance(data, str):
+                kline_update = json.loads(data)
+            else:
+                self.logger.error(f"Unexpected data type in message: {type(data)}")
+                return
 
             _, symbol, interval = channel.split(':')
 
@@ -531,6 +585,11 @@ class FeatureEngineService:
             kline_timestamp_ns = kline_timestamp_ms * 1_000_000
 
             if kline_timestamp_ns <= self.last_processed[symbol][interval]:
+                return
+
+            features_table = f"features_{interval}"
+            if features_table in self.failed_tables and self.table_retry_count[
+                features_table] >= self.max_table_retries:
                 return
 
             lookback = self.config.get('feature_engine.lookback_periods', 300)
@@ -567,9 +626,9 @@ class FeatureEngineService:
                     f"Feature calculation returned empty for realtime update {symbol} {interval} at {pd.Timestamp(kline_timestamp_ns, unit='ns')}")
 
         except json.JSONDecodeError as e:
-            self.logger.error(f"Failed to decode JSON from kline update: {data_bytes}, Error: {e}")
+            self.logger.error(f"Failed to decode JSON from kline update: {data}, Error: {e}")
         except Exception as e:
-            self.logger.error(f"Error processing kline update for {message.get('channel')}: {e}", exc_info=True)
+            self.logger.error(f"Error processing kline update for {channel}: {e}", exc_info=True)
 
     async def flush_buffer(self):
         if not self.feature_buffer:
@@ -613,6 +672,11 @@ class FeatureEngineService:
                 for symbol in self.symbols:
                     for interval in ['1h', '1d']:
                         try:
+                            features_table = f"features_{interval}"
+                            if features_table in self.failed_tables and self.table_retry_count[
+                                features_table] >= self.max_table_retries:
+                                continue
+
                             features_df = self.questdb.get_features_df(symbol, interval, limit=1000)
 
                             if not features_df.empty:
@@ -622,15 +686,13 @@ class FeatureEngineService:
                                     self.redis.set_json(
                                         f"quality:{symbol}:{interval}",
                                         quality_report,
-                                        expire=int(
-                                            self.config.get('feature_engine.quality_check_interval', 600) * 1.5)
+                                        expire=int(self.config.get('feature_engine.quality_check_interval', 600) * 1.5)
                                     )
 
                                 overall_score = quality_report.get('overall_quality_score', 100.0)
                                 if overall_score < 70:
                                     self.logger.warning(
-                                        f"Low data quality score for {symbol} {interval}: {overall_score:.2f}. Report: {quality_report.get('recommendations')}"
-                                    )
+                                        f"Low data quality score for {symbol} {interval}: {overall_score:.2f}. Report: {quality_report.get('recommendations')}")
                                 else:
                                     self.logger.info(f"Data quality score for {symbol} {interval}: {overall_score:.2f}")
                             else:

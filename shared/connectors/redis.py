@@ -51,8 +51,10 @@ class RedisConnector:
         message = self.pubsub.get_message(timeout=timeout)
         if message and message['type'] == 'message':
             try:
-                message['data'] = json.loads(message['data'])
-            except:
+                data = message['data']
+                if isinstance(data, bytes):
+                    message['data'] = json.loads(data.decode('utf-8'))
+            except (json.JSONDecodeError, AttributeError):
                 pass
         return message
 
